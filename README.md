@@ -88,5 +88,3 @@ The bot waits until 8:25am ET, checks trading hours, skips early-close days, the
 ## Disclaimer
 
 Trading involves significant risk of loss. Test on a paper account before going live.
-
-
