@@ -137,6 +137,11 @@ class OrderManager:
             self._halted = True
             return
 
+        if self._entries >= 4:
+            logger.info("4th trade SL — no reverse, candle halted")
+            self._halted = True
+            return
+
         await self._place_reverse("SELL" if prev == Side.LONG else "BUY", fill_price)
 
     async def _on_reverse_filled(self, fill_price: float):
