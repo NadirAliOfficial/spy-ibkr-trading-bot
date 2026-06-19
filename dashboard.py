@@ -1,8 +1,7 @@
 import re
 import os
 from datetime import datetime
-from zoneinfo import ZoneInfo
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, render_template_string
 
 app = Flask(__name__)
 LOG_PATH = os.path.join(os.path.dirname(__file__), "spy_bot.log")
@@ -116,13 +115,12 @@ header {
 /* ─── STAT CARDS ─── */
 .stats {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   padding: 20px;
 }
-@media(max-width:1100px) { .stats{ grid-template-columns: repeat(3,1fr); } }
-@media(max-width:700px)  { .stats{ grid-template-columns: repeat(2,1fr); } }
-@media(max-width:480px)  { .stats{ grid-template-columns: 1fr 1fr; gap:10px; padding:14px; } }
+@media(max-width:900px) { .stats{ grid-template-columns: repeat(2,1fr); } }
+@media(max-width:480px) { .stats{ grid-template-columns: 1fr 1fr; gap:10px; padding:14px; } }
 
 .card {
   background: var(--s1);
@@ -312,11 +310,6 @@ header {
     <div class="card-sub" id="pos-sub">No open position</div>
   </div>
   <div class="card">
-    <div class="card-label">Daily PnL</div>
-    <div class="card-value" id="pnl-val">--</div>
-    <div class="card-sub" id="pnl-sub">Unrealized: -- | Realized: --</div>
-  </div>
-  <div class="card">
     <div class="card-label">Equity (ELV)</div>
     <div class="card-value blue" id="elv-val">--</div>
     <div class="card-sub">Available capital</div>
@@ -362,31 +355,23 @@ header {
 
 <script>
 // ── Clock
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function tickClock() {
-  const now = new Date();
-  // ET offset: EDT = -4 (Mar-Nov), EST = -5 (Nov-Mar)
-  const etOffset = -4; // June is always EDT
-  const et = new Date(now.getTime() + etOffset * 3600000);
-  const hh = String(et.getUTCHours()).padStart(2,'0');
-  const mm = String(et.getUTCMinutes()).padStart(2,'0');
-  const ss = String(et.getUTCSeconds()).padStart(2,'0');
-  document.getElementById('clock').textContent = hh+':'+mm+':'+ss;
-  try {
-    document.getElementById('clock-date').textContent = et.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric',timeZone:'UTC'});
-  } catch(e) {
-    document.getElementById('clock-date').textContent = et.toUTCString().slice(0,16);
-  }
+  const et = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+  document.getElementById('clock').textContent =
+    String(et.getHours()).padStart(2,'0')+':'+String(et.getMinutes()).padStart(2,'0')+':'+String(et.getSeconds()).padStart(2,'0');
+  document.getElementById('clock-date').textContent =
+    DAYS[et.getDay()]+', '+MONTHS[et.getMonth()]+' '+et.getDate()+' '+et.getFullYear();
 }
 setInterval(tickClock,1000); tickClock();
 
-// ── Market status (uses same UTC-4 offset as clock — no Intl dependency)
+// ── Market status
 function updateMarket() {
-  const now = new Date();
-  const et = new Date(now.getTime() - 4*3600000);
-  const day = et.getUTCDay();
-  const mins = et.getUTCHours()*60 + et.getUTCMinutes();
+  const et = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+  const d=et.getDay(), mins=et.getHours()*60+et.getMinutes();
   const banner=document.getElementById('mkt-banner'), txt=document.getElementById('mkt-txt');
-  if(day===0||day===6){ banner.className='mkt-banner closed'; txt.textContent='Market Closed — Weekend'; }
+  if(d===0||d===6){ banner.className='mkt-banner closed'; txt.textContent='Market Closed — Weekend'; }
   else if(mins>=570&&mins<960){ banner.className='mkt-banner open'; txt.textContent='NYSE & NASDAQ Open — Regular Session 9:30 AM – 4:00 PM ET'; }
   else if(mins>=240&&mins<570){ banner.className='mkt-banner pre'; txt.textContent='Pre-Market Session (4:00 AM – 9:30 AM ET)'; }
   else{ banner.className='mkt-banner closed'; txt.textContent='Market Closed — After Hours'; }
@@ -415,17 +400,6 @@ async function refresh(){
     const chip=document.getElementById('chip');
     chip.className='status-chip '+d.status;
     document.getElementById('chip-txt').textContent={running:'Running',waiting:'Waiting',stopped:'Offline'}[d.status]||d.status;
-
-    // pnl
-    const pv=document.getElementById('pnl-val');
-    if(d.daily_pnl!==null){
-      const sign=d.daily_pnl>=0?'+':'';
-      pv.textContent=sign+'$'+Number(d.daily_pnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-      pv.style.color=d.daily_pnl>=0?'var(--green)':d.daily_pnl<0?'var(--red)':'var(--text)';
-      const ur=d.unrealized_pnl!==null?'$'+Number(d.unrealized_pnl).toFixed(2):'--';
-      const re=d.realized_pnl!==null?'$'+Number(d.realized_pnl).toFixed(2):'--';
-      document.getElementById('pnl-sub').textContent='Unreal: '+ur+' | Real: '+re;
-    } else { pv.textContent='--'; pv.style.color=''; }
 
     // stats
     document.getElementById('elv-val').textContent=d.elv?'$'+Number(d.elv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';
@@ -495,12 +469,11 @@ LOG_RE = re.compile(
 
 
 def parse_log():
-    today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     state = {
         "account": None, "elv": None, "leg_qty": None,
         "candle_open": None, "entries": 0,
         "position": "FLAT", "pos_qty": None, "entry_price": None,
-        "daily_pnl": None, "unrealized_pnl": None, "realized_pnl": None,
         "status": "stopped", "trades": [], "log_lines": [],
     }
     try:
@@ -541,12 +514,6 @@ def parse_log():
             m2 = re.search(r"\bleg=(\d+)", msg)
             if m2:
                 state["leg_qty"] = int(m2.group(1))
-        if "PnL daily=" in msg:
-            m2 = re.search(r"daily=([-\d.]+) unrealized=([-\d.]+) realized=([-\d.]+)", msg)
-            if m2:
-                state["daily_pnl"] = float(m2.group(1))
-                state["unrealized_pnl"] = float(m2.group(2))
-                state["realized_pnl"] = float(m2.group(3))
         if "Candle open:" in msg:
             m2 = re.search(r"Candle open: ([\d.]+)", msg)
             if m2:
@@ -589,16 +556,9 @@ def parse_log():
     return state
 
 
-@app.after_request
-def no_cache(r):
-    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-    r.headers["Pragma"] = "no-cache"
-    return r
-
-
 @app.route("/")
 def index():
-    return Response(HTML, mimetype="text/html")
+    return render_template_string(HTML)
 
 
 @app.route("/api/state")
