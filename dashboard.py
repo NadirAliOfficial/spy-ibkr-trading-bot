@@ -1,6 +1,7 @@
 import re
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, render_template_string
 
 app = Flask(__name__)
@@ -361,21 +362,23 @@ header {
 
 <script>
 // ── Clock
-const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const _timeFmt = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+const _dateFmt = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'long',year:'numeric',month:'short',day:'numeric'});
 function tickClock() {
-  const et = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
-  document.getElementById('clock').textContent =
-    String(et.getHours()).padStart(2,'0')+':'+String(et.getMinutes()).padStart(2,'0')+':'+String(et.getSeconds()).padStart(2,'0');
-  document.getElementById('clock-date').textContent =
-    DAYS[et.getDay()]+', '+MONTHS[et.getMonth()]+' '+et.getDate()+' '+et.getFullYear();
+  const now = new Date();
+  document.getElementById('clock').textContent = _timeFmt.format(now).replace(/ /g,' ');
+  document.getElementById('clock-date').textContent = _dateFmt.format(now);
 }
 setInterval(tickClock,1000); tickClock();
 
 // ── Market status
+const _etParts = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'numeric',minute:'numeric',hour12:false});
 function updateMarket() {
-  const et = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
-  const d=et.getDay(), mins=et.getHours()*60+et.getMinutes();
+  const parts = _etParts.formatToParts(new Date());
+  const get = t => parts.find(p=>p.type===t)?.value;
+  const dayMap = {Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6};
+  const d = dayMap[get('weekday')] ?? 1;
+  const mins = parseInt(get('hour'))*60+parseInt(get('minute'));
   const banner=document.getElementById('mkt-banner'), txt=document.getElementById('mkt-txt');
   if(d===0||d===6){ banner.className='mkt-banner closed'; txt.textContent='Market Closed — Weekend'; }
   else if(mins>=570&&mins<960){ banner.className='mkt-banner open'; txt.textContent='NYSE & NASDAQ Open — Regular Session 9:30 AM – 4:00 PM ET'; }
@@ -486,7 +489,7 @@ LOG_RE = re.compile(
 
 
 def parse_log():
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     state = {
         "account": None, "elv": None, "leg_qty": None,
         "candle_open": None, "entries": 0,
