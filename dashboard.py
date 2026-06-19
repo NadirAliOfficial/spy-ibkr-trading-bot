@@ -2,7 +2,7 @@ import re
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, Response
 
 app = Flask(__name__)
 LOG_PATH = os.path.join(os.path.dirname(__file__), "spy_bot.log")
@@ -600,7 +600,7 @@ def no_cache(r):
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    return Response(HTML, mimetype="text/html")
 
 
 @app.route("/api/state")
