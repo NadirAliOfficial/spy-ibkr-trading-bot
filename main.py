@@ -192,7 +192,7 @@ async def run():
     report = generate_report(sim_sl.records, candles.history)
     print(report)
     save_report(report)
-    email_report(report)
+    email_report(sim_sl.records, candles.history)
 
     app.disconnect()
     logger.info("Session complete")
