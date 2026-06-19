@@ -21,25 +21,28 @@ class OrderGroup:
     cancelled: bool = False
 
 
-def stp(action: str, qty: int, stop_px: float, transmit: bool, parent_id: int = 0) -> Order:
+def _base(action: str, qty: int, transmit: bool) -> Order:
     o = Order()
     o.action = action
-    o.orderType = "STP"
     o.totalQuantity = qty
-    o.auxPrice = round(round(stop_px / 0.01) * 0.01, 2)
     o.transmit = transmit
     o.tif = "DAY"
+    o.eTradeOnly = False
+    o.firmQuoteOnly = False
+    return o
+
+
+def stp(action: str, qty: int, stop_px: float, transmit: bool, parent_id: int = 0) -> Order:
+    o = _base(action, qty, transmit)
+    o.orderType = "STP"
+    o.auxPrice = round(round(stop_px / 0.01) * 0.01, 2)
     if parent_id:
         o.parentId = parent_id
     return o
 
 
 def mkt(action: str, qty: int, parent_id: int, transmit: bool) -> Order:
-    o = Order()
-    o.action = action
+    o = _base(action, qty, transmit)
     o.orderType = "MKT"
-    o.totalQuantity = qty
     o.parentId = parent_id
-    o.transmit = transmit
-    o.tif = "DAY"
     return o

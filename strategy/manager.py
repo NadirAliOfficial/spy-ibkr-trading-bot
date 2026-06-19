@@ -101,7 +101,7 @@ class OrderManager:
             await self._on_reverse_filled(fill_price)
 
     async def on_partial_fill(self, order_id: int):
-        self._app.cancelOrder(order_id, "")
+        self._app.cancelOrder(order_id)
 
     # ── Entry fills ───────────────────────────────────────────────────────
 
@@ -222,7 +222,7 @@ class OrderManager:
     def _cancel_stp3(self):
         for oid in (self._s3_pid, self._s3_cid):
             if oid:
-                self._app.cancelOrder(oid, "")
+                self._app.cancelOrder(oid)
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
 
@@ -253,7 +253,7 @@ class OrderManager:
         self._cancel_group(self._z)
         self._cancel_stp3()
         if self._rev_id:
-            self._app.cancelOrder(self._rev_id, "")
+            self._app.cancelOrder(self._rev_id)
 
         qty = self._pos_qty or (self._total if self._rev_side != Side.FLAT else 0)
         side = self._pos if self._pos != Side.FLAT else self._rev_side
@@ -275,6 +275,6 @@ class OrderManager:
 
     def _cancel_group(self, g: OrderGroup | None):
         if g and not g.filled and not g.cancelled:
-            self._app.cancelOrder(g.parent_id, "")
-            self._app.cancelOrder(g.child_id, "")
+            self._app.cancelOrder(g.parent_id)
+            self._app.cancelOrder(g.child_id)
             g.cancelled = True
