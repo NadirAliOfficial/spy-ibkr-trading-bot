@@ -379,16 +379,14 @@ function tickClock() {
 }
 setInterval(tickClock,1000); tickClock();
 
-// ── Market status
-const _etParts = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'numeric',minute:'numeric',hour12:false});
+// ── Market status (uses same UTC-4 offset as clock — no Intl dependency)
 function updateMarket() {
-  const parts = _etParts.formatToParts(new Date());
-  const get = t => parts.find(p=>p.type===t)?.value;
-  const dayMap = {Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6};
-  const d = dayMap[get('weekday')] ?? 1;
-  const mins = parseInt(get('hour'))*60+parseInt(get('minute'));
+  const now = new Date();
+  const et = new Date(now.getTime() - 4*3600000);
+  const day = et.getUTCDay();
+  const mins = et.getUTCHours()*60 + et.getUTCMinutes();
   const banner=document.getElementById('mkt-banner'), txt=document.getElementById('mkt-txt');
-  if(d===0||d===6){ banner.className='mkt-banner closed'; txt.textContent='Market Closed — Weekend'; }
+  if(day===0||day===6){ banner.className='mkt-banner closed'; txt.textContent='Market Closed — Weekend'; }
   else if(mins>=570&&mins<960){ banner.className='mkt-banner open'; txt.textContent='NYSE & NASDAQ Open — Regular Session 9:30 AM – 4:00 PM ET'; }
   else if(mins>=240&&mins<570){ banner.className='mkt-banner pre'; txt.textContent='Pre-Market Session (4:00 AM – 9:30 AM ET)'; }
   else{ banner.className='mkt-banner closed'; txt.textContent='Market Closed — After Hours'; }
