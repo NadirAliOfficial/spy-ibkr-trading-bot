@@ -115,12 +115,13 @@ header {
 /* ─── STAT CARDS ─── */
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
   padding: 20px;
 }
-@media(max-width:900px) { .stats{ grid-template-columns: repeat(2,1fr); } }
-@media(max-width:480px) { .stats{ grid-template-columns: 1fr 1fr; gap:10px; padding:14px; } }
+@media(max-width:1100px) { .stats{ grid-template-columns: repeat(3,1fr); } }
+@media(max-width:700px)  { .stats{ grid-template-columns: repeat(2,1fr); } }
+@media(max-width:480px)  { .stats{ grid-template-columns: 1fr 1fr; gap:10px; padding:14px; } }
 
 .card {
   background: var(--s1);
@@ -310,6 +311,11 @@ header {
     <div class="card-sub" id="pos-sub">No open position</div>
   </div>
   <div class="card">
+    <div class="card-label">Daily PnL</div>
+    <div class="card-value" id="pnl-val">--</div>
+    <div class="card-sub" id="pnl-sub">Unrealized: -- | Realized: --</div>
+  </div>
+  <div class="card">
     <div class="card-label">Equity (ELV)</div>
     <div class="card-value blue" id="elv-val">--</div>
     <div class="card-sub">Available capital</div>
@@ -401,6 +407,17 @@ async function refresh(){
     chip.className='status-chip '+d.status;
     document.getElementById('chip-txt').textContent={running:'Running',waiting:'Waiting',stopped:'Offline'}[d.status]||d.status;
 
+    // pnl
+    const pv=document.getElementById('pnl-val');
+    if(d.daily_pnl!==null){
+      const sign=d.daily_pnl>=0?'+':'';
+      pv.textContent=sign+'$'+Number(d.daily_pnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      pv.style.color=d.daily_pnl>=0?'var(--green)':d.daily_pnl<0?'var(--red)':'var(--text)';
+      const ur=d.unrealized_pnl!==null?'$'+Number(d.unrealized_pnl).toFixed(2):'--';
+      const re=d.realized_pnl!==null?'$'+Number(d.realized_pnl).toFixed(2):'--';
+      document.getElementById('pnl-sub').textContent='Unreal: '+ur+' | Real: '+re;
+    } else { pv.textContent='--'; pv.style.color=''; }
+
     // stats
     document.getElementById('elv-val').textContent=d.elv?'$'+Number(d.elv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';
     document.getElementById('open-val').textContent=d.candle_open?'$'+d.candle_open:'--';
@@ -474,6 +491,7 @@ def parse_log():
         "account": None, "elv": None, "leg_qty": None,
         "candle_open": None, "entries": 0,
         "position": "FLAT", "pos_qty": None, "entry_price": None,
+        "daily_pnl": None, "unrealized_pnl": None, "realized_pnl": None,
         "status": "stopped", "trades": [], "log_lines": [],
     }
     try:
@@ -514,6 +532,12 @@ def parse_log():
             m2 = re.search(r"\bleg=(\d+)", msg)
             if m2:
                 state["leg_qty"] = int(m2.group(1))
+        if "PnL daily=" in msg:
+            m2 = re.search(r"daily=([-\d.]+) unrealized=([-\d.]+) realized=([-\d.]+)", msg)
+            if m2:
+                state["daily_pnl"] = float(m2.group(1))
+                state["unrealized_pnl"] = float(m2.group(2))
+                state["realized_pnl"] = float(m2.group(3))
         if "Candle open:" in msg:
             m2 = re.search(r"Candle open: ([\d.]+)", msg)
             if m2:
