@@ -1,7 +1,7 @@
-import smtplib
 import logging
 from collections import Counter
-from email.mime.text import MIMEText
+
+import resend
 
 import config
 from market import Candle, CandleRecord
@@ -49,24 +49,22 @@ def save_report(report: str, path: str = "post_trade_report.txt"):
     logger.info("Report saved to %s", path)
 
 
-def email_report(report: str, subject: str = "SPY Bot Post-Trade Report"):
+def email_report(report: str, subject: str = "SPY Bot — Post-Trade Report"):
+    api_key = config.RESEND_API_KEY
     to_addr = config.REPORT_EMAIL_TO
-    from_addr = config.REPORT_EMAIL_FROM
-    password = config.REPORT_EMAIL_PASS
 
-    if not all([to_addr, from_addr, password]):
-        logger.warning("Email not configured — skipping. Set REPORT_EMAIL_TO, REPORT_EMAIL_FROM, REPORT_EMAIL_PASS.")
+    if not api_key or not to_addr:
+        logger.warning("Email not configured — skipping. Set RESEND_API_KEY and REPORT_EMAIL_TO in .env")
         return
 
-    msg = MIMEText(report)
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-
+    resend.api_key = api_key
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(from_addr, password)
-            smtp.sendmail(from_addr, to_addr, msg.as_string())
+        resend.Emails.send({
+            "from": "SPY Bot <onboarding@resend.dev>",
+            "to": [to_addr],
+            "subject": subject,
+            "text": report,
+        })
         logger.info("Report emailed to %s", to_addr)
     except Exception as e:
         logger.error("Failed to email report: %s", e)

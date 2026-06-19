@@ -1,4 +1,14 @@
 import os
+from pathlib import Path
+
+# load .env if present
+_env = Path(__file__).parent / ".env"
+if _env.exists():
+    for _line in _env.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 
 HOST = os.getenv("IBKR_HOST", "127.0.0.1")
 PORT = int(os.getenv("IBKR_PORT", "7497"))    # 7497 = paper, 7496 = live
@@ -39,6 +49,5 @@ TP2_ARM_PCT = 0.105
 TP2_TRAIL_PCT = 0.10
 
 # Email report
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 REPORT_EMAIL_TO = os.getenv("REPORT_EMAIL_TO", "")
-REPORT_EMAIL_FROM = os.getenv("REPORT_EMAIL_FROM", "")
-REPORT_EMAIL_PASS = os.getenv("REPORT_EMAIL_PASS", "")
