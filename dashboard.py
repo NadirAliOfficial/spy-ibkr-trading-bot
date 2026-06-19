@@ -328,7 +328,7 @@ header {
   <div class="card">
     <div class="card-label">Daily PnL</div>
     <div class="card-value flat" id="pnl-val">--</div>
-    <div class="card-sub" id="pnl-sub">Unrealized today</div>
+    <div class="card-sub" id="pnl-sub">% of capital</div>
   </div>
 </div>
 
@@ -416,12 +416,15 @@ async function refresh(){
     document.getElementById('leg-val').textContent=d.leg_qty||'--';
 
     const pnlEl=document.getElementById('pnl-val');
-    if(d.daily_pnl!==null&&d.daily_pnl!==undefined){
-      const pv=d.daily_pnl;
-      pnlEl.textContent=(pv>=0?'+':'')+'$'+Math.abs(pv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const pnlSub=document.getElementById('pnl-sub');
+    if(d.daily_pnl!==null&&d.daily_pnl!==undefined&&d.elv&&d.elv>0){
+      const pv=d.daily_pnl, pct=(pv/d.elv)*100;
+      pnlEl.textContent=(pct>=0?'+':'')+pct.toFixed(2)+'%';
       pnlEl.className='card-value '+(pv>0?'long':pv<0?'short':'flat');
+      pnlSub.textContent=(pv>=0?'+':'')+'$'+Math.abs(pv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' of capital';
     } else {
       pnlEl.textContent='--'; pnlEl.className='card-value flat';
+      pnlSub.textContent='% of capital';
     }
 
     const pos=d.position||'FLAT';
