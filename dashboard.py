@@ -364,13 +364,18 @@ header {
 // ── Clock
 function tickClock() {
   const now = new Date();
-  const tp = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(now);
-  const dp = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'long',month:'long',day:'numeric',year:'numeric'}).formatToParts(now);
-  const gt = t => tp.find(p=>p.type===t)?.value ?? '00';
-  const gd = t => dp.find(p=>p.type===t)?.value ?? '';
-  const h = gt('hour') === '24' ? '00' : gt('hour');
-  document.getElementById('clock').textContent = h+':'+gt('minute')+':'+gt('second');
-  document.getElementById('clock-date').textContent = gd('weekday')+', '+gd('month')+' '+gd('day')+' '+gd('year');
+  // ET offset: EDT = -4 (Mar-Nov), EST = -5 (Nov-Mar)
+  const etOffset = -4; // June is always EDT
+  const et = new Date(now.getTime() + etOffset * 3600000);
+  const hh = String(et.getUTCHours()).padStart(2,'0');
+  const mm = String(et.getUTCMinutes()).padStart(2,'0');
+  const ss = String(et.getUTCSeconds()).padStart(2,'0');
+  document.getElementById('clock').textContent = hh+':'+mm+':'+ss;
+  try {
+    document.getElementById('clock-date').textContent = et.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric',timeZone:'UTC'});
+  } catch(e) {
+    document.getElementById('clock-date').textContent = et.toUTCString().slice(0,16);
+  }
 }
 setInterval(tickClock,1000); tickClock();
 
