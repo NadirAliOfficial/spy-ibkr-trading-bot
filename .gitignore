@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.log
+post_trade_report.txt
+.DS_Store
