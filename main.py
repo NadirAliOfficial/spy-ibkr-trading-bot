@@ -6,7 +6,7 @@ import config
 from gateway import connect, spy_contract
 from market import CandleBuilder, SimStopLoss
 from strategy import OrderManager
-from risk import RiskManager, generate_report, save_report
+from risk import RiskManager, generate_report, save_report, email_report
 from utils import now_et, et_time, is_early_close, parse_trading_hours, calc_leg_qty
 
 logging.basicConfig(
@@ -192,6 +192,7 @@ async def run():
     report = generate_report(sim_sl.records, candles.history)
     print(report)
     save_report(report)
+    email_report(report)
 
     app.disconnect()
     logger.info("Session complete")

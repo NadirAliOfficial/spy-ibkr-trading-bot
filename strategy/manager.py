@@ -141,7 +141,7 @@ class OrderManager:
 
     async def _on_reverse_filled(self, fill_price: float):
         self._pos = self._rev_side
-        self._pos_qty = self._total
+        self._pos_qty = self._total * 2
         logger.info("Reverse filled @ %.2f — now %s", fill_price, self._rev_side.name)
 
     async def _check_reverse_stop(self, price: float):
@@ -155,7 +155,8 @@ class OrderManager:
     async def _flatten_reverse(self):
         action = "BUY" if self._rev_side == Side.SHORT else "SELL"
         oid = self._app.next_id()
-        o = mkt(action, self._total, 0, transmit=True)
+        qty = self._pos_qty or self._total * 2
+        o = mkt(action, qty, 0, transmit=True)
         o.orderId = oid
         self._app.placeOrder(oid, CONTRACT, o)
         self._rev_side, self._pos, self._pos_qty = Side.FLAT, Side.FLAT, 0
@@ -239,7 +240,7 @@ class OrderManager:
         else:
             px = _rp((self.last_ask or ref) + 0.03)
             self._rev_side = Side.LONG
-        o = stp(action, self._total, px, transmit=True)
+        o = stp(action, self._total * 2, px, transmit=True)
         o.orderId = pid
         self._app.placeOrder(pid, CONTRACT, o)
         self._rev_id = pid
@@ -255,7 +256,8 @@ class OrderManager:
         if self._rev_id:
             self._app.cancelOrder(self._rev_id)
 
-        qty = self._pos_qty or (self._total if self._rev_side != Side.FLAT else 0)
+        rev_qty = self._total * 2 if self._rev_side != Side.FLAT else 0
+        qty = self._pos_qty or rev_qty
         side = self._pos if self._pos != Side.FLAT else self._rev_side
 
         if side != Side.FLAT and qty > 0:
