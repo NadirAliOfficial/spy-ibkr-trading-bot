@@ -4,8 +4,8 @@ import threading
 import time
 
 from ibapi.client import EClient
-from ibapi.contract import Contract
 from ibapi.common import TickerId
+from ibapi.contract import Contract
 from ibapi.wrapper import EWrapper
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,6 @@ class IBApp(EWrapper, EClient):
 
         self.equity_with_loan: float = 0.0
         self.sell_init_margin: float = 0.0
-
         self._next_order_id: int = 1
 
     def next_id(self) -> int:
@@ -48,7 +47,7 @@ class IBApp(EWrapper, EClient):
     def _enqueue(self, queue: asyncio.Queue, event: dict):
         self._loop.call_soon_threadsafe(queue.put_nowait, event)
 
-    # Connection
+    # --- Connection ---
 
     def managedAccounts(self, accountsList: str):
         self.account = accountsList.split(",")[0].strip()
@@ -66,15 +65,16 @@ class IBApp(EWrapper, EClient):
         logger.error("reqId=%d code=%d: %s", reqId, errorCode, errorString)
         self._enqueue(self.order_queue, {"type": "error", "reqId": reqId, "code": errorCode})
 
-    # Market data
+    # --- Market data ---
 
     def tickPrice(self, reqId: TickerId, tickType: int, price: float, attrib):
         if price > 0:
             self._enqueue(self.tick_queue, {
-                "type": "tick_price", "tickType": tickType, "price": price, "ts": time.time()
+                "type": "tick_price", "tickType": tickType,
+                "price": price, "ts": time.time(),
             })
 
-    # Account summary
+    # --- Account summary ---
 
     def accountSummary(self, reqId: int, account: str, tag: str, value: str, currency: str):
         if tag == "EquityWithLoanValue":
@@ -95,7 +95,7 @@ class IBApp(EWrapper, EClient):
         await asyncio.wait_for(fut, timeout=15)
         return self.equity_with_loan, self.sell_init_margin
 
-    # Contract / trading hours
+    # --- Trading hours ---
 
     def contractDetails(self, reqId: int, contractDetails):
         fut = self._contract_futures.get(reqId)
@@ -113,7 +113,7 @@ class IBApp(EWrapper, EClient):
         details = await asyncio.wait_for(fut, timeout=15)
         return details.tradingHours
 
-    # Orders
+    # --- Orders ---
 
     def orderStatus(self, orderId: int, status: str, filled: float, remaining: float,
                     avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float,
@@ -129,7 +129,7 @@ class IBApp(EWrapper, EClient):
             "shares": execution.shares, "price": execution.price,
         })
 
-    # PnL (account-level, via reqPnL)
+    # --- PnL (account-level) ---
 
     def pnl(self, reqId: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float):
         self._enqueue(self.order_queue, {
@@ -141,7 +141,8 @@ class IBApp(EWrapper, EClient):
         threading.Thread(target=self.run, daemon=True).start()
 
 
-def connect(host: str, port: int, client_id: int, loop: asyncio.AbstractEventLoop) -> IBApp:
+def connect(host: str, port: int, client_id: int,
+            loop: asyncio.AbstractEventLoop) -> IBApp:
     app = IBApp(loop)
     app.connect(host, port, client_id)
     app.run_in_thread()

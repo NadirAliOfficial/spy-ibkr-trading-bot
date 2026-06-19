@@ -1,6 +1,5 @@
 from collections import Counter
-from sim_stop_loss import CandleRecord
-from candle import Candle
+from market import Candle, CandleRecord
 
 
 def generate_report(sim_records: list[CandleRecord], candles: list[Candle]) -> str:
@@ -12,19 +11,19 @@ def generate_report(sim_records: list[CandleRecord], candles: list[Candle]) -> s
         total = len(scores)
         mode = counter.most_common(1)[0][0]
 
-        lines += ["", "Simulated Stop Loss Triggers Per Candle",
-                  f"{'Score':<22} {'Occurrences':>12} {'Percentage':>12}",
-                  "-" * 52]
+        lines += [
+            "",
+            "Simulated Stop Loss Triggers Per Candle",
+            f"{'Score':<22} {'Occurrences':>12} {'Percentage':>12}",
+            "-" * 52,
+        ]
 
-        # Mode first, then remaining scores descending
-        ordered = sorted(counter.keys(), key=lambda s: (s != mode, -s))
-        for score in ordered:
+        for score in sorted(counter, key=lambda s: (s != mode, -s)):
             occ = counter[score]
-            pct = occ / total * 100
             tag = " *" if score == mode else ""
-            lines.append(f"{score:<22} {occ:>12} {pct:>11.2f}%{tag}")
+            lines.append(f"{score:<22} {occ:>12} {occ/total*100:>11.2f}%{tag}")
 
-        lines += [f"", f"  Mode = {mode}  |  Total candles = {total}"]
+        lines += ["", f"  Mode = {mode}  |  Total candles = {total}"]
     else:
         lines.append("\nNo simulated SL data recorded.")
 

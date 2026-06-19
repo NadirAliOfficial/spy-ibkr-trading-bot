@@ -16,7 +16,7 @@ class SimStopLoss:
     Tracks simulated SL events per 1-min candle without placing orders.
     Runs 9:30am–12:30pm ET. Drives Y2/Z2 re-entry conditions.
 
-    At each candle open: sim_long_sl = Open-0.01, sim_short_sl = Open+0.01.
+    At each candle open: long_sl = Open-0.01, short_sl = Open+0.01.
     Each boundary touch increments hit count and rolls the level outward.
     Y2/Z2 fire when candle hits >= 2.
     """

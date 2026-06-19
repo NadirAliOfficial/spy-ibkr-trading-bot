@@ -9,10 +9,15 @@ EXCHANGE = "SMART"
 CURRENCY = "USD"
 SEC_TYPE = "STK"
 
-# Tick types
+# Tick types — real-time
 TICK_BID = 1
 TICK_ASK = 2
 TICK_LAST = 4
+
+# Tick types — delayed (paper accounts, reqMarketDataType(3))
+DTICK_BID = 66
+DTICK_ASK = 67
+DTICK_LAST = 68
 
 # Strategy
 OPEN_OFFSET = 0.01
