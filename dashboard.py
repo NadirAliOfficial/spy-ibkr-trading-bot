@@ -1,6 +1,7 @@
 import re
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, render_template_string
 
 app = Flask(__name__)
@@ -115,12 +116,12 @@ header {
 /* ─── STAT CARDS ─── */
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
   padding: 20px;
 }
-@media(max-width:900px) { .stats{ grid-template-columns: repeat(2,1fr); } }
-@media(max-width:480px) { .stats{ grid-template-columns: 1fr 1fr; gap:10px; padding:14px; } }
+@media(max-width:1050px) { .stats{ grid-template-columns: repeat(3,1fr); } }
+@media(max-width:640px)  { .stats{ grid-template-columns: repeat(2,1fr); gap:10px; padding:14px; } }
 
 .card {
   background: var(--s1);
@@ -324,6 +325,11 @@ header {
     <div class="card-value" id="leg-val">--</div>
     <div class="card-sub">Shares per leg</div>
   </div>
+  <div class="card">
+    <div class="card-label">Daily PnL</div>
+    <div class="card-value flat" id="pnl-val">--</div>
+    <div class="card-sub" id="pnl-sub">Unrealized today</div>
+  </div>
 </div>
 
 <!-- PANELS -->
@@ -407,6 +413,15 @@ async function refresh(){
     document.getElementById('entries-sub').textContent=(d.entries||0)+' / 4 entries';
     document.getElementById('leg-val').textContent=d.leg_qty||'--';
 
+    const pnlEl=document.getElementById('pnl-val');
+    if(d.daily_pnl!==null&&d.daily_pnl!==undefined){
+      const pv=d.daily_pnl;
+      pnlEl.textContent=(pv>=0?'+':'')+'$'+Math.abs(pv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      pnlEl.className='card-value '+(pv>0?'long':pv<0?'short':'flat');
+    } else {
+      pnlEl.textContent='--'; pnlEl.className='card-value flat';
+    }
+
     const pos=d.position||'FLAT';
     const pv=document.getElementById('pos-val');
     pv.textContent=pos; pv.className='card-value '+pos.toLowerCase();
@@ -469,11 +484,12 @@ LOG_RE = re.compile(
 
 
 def parse_log():
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     state = {
         "account": None, "elv": None, "leg_qty": None,
         "candle_open": None, "entries": 0,
         "position": "FLAT", "pos_qty": None, "entry_price": None,
+        "daily_pnl": None,
         "status": "stopped", "trades": [], "log_lines": [],
     }
     try:
@@ -541,6 +557,10 @@ def parse_log():
             m2 = re.search(r"now (\w+)", msg)
             if m2:
                 state["position"] = m2.group(1)
+        if "PnL update:" in msg:
+            m2 = re.search(r"PnL update: ([-\d.]+)", msg)
+            if m2:
+                state["daily_pnl"] = float(m2.group(1))
         if any(k in msg for k in TRADE_KEYWORDS):
             state["trades"].append(e)
 

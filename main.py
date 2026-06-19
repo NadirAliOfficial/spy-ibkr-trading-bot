@@ -91,7 +91,9 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
                 await order_mgr.on_partial_fill(event["orderId"])
 
         elif etype == "pnl":
-            reason = risk_mgr.check(event["dailyPnL"])
+            daily_pnl = event["dailyPnL"]
+            logger.info("PnL update: %.2f", daily_pnl)
+            reason = risk_mgr.check(daily_pnl)
             if reason:
                 logger.warning("Risk exit: %s", reason)
                 await order_mgr.exit_all(reason)
