@@ -404,8 +404,10 @@ async function refresh(){
 
     // status chip
     const chip=document.getElementById('chip');
-    chip.className='status-chip '+d.status;
-    document.getElementById('chip-txt').textContent={running:'Running',waiting:'Waiting',stopped:'Offline'}[d.status]||d.status;
+    const statusMap={running:'Running',waiting:'Waiting',holiday:'Holiday',ended:'Session Ended',stopped:'Offline'};
+    const chipClass={running:'running',waiting:'waiting',holiday:'waiting',ended:'waiting',stopped:'stopped'};
+    chip.className='status-chip '+(chipClass[d.status]||'stopped');
+    document.getElementById('chip-txt').textContent=statusMap[d.status]||d.status;
 
     // stats
     document.getElementById('elv-val').textContent=d.elv?'$'+Number(d.elv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';
@@ -568,8 +570,10 @@ def parse_log():
         last = parsed[-1]["msg"]
         if "Waiting" in last or "pre-check" in last:
             state["status"] = "waiting"
-        elif "Session complete" in last or "Early close" in last:
-            state["status"] = "stopped"
+        elif "Early close" in last:
+            state["status"] = "holiday"
+        elif "Session complete" in last:
+            state["status"] = "ended"
         elif state["account"]:
             state["status"] = "running"
 
