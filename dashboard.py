@@ -362,12 +362,15 @@ header {
 
 <script>
 // ── Clock
-const _timeFmt = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
-const _dateFmt = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'long',year:'numeric',month:'short',day:'numeric'});
 function tickClock() {
   const now = new Date();
-  document.getElementById('clock').textContent = _timeFmt.format(now).replace(/ /g,' ');
-  document.getElementById('clock-date').textContent = _dateFmt.format(now);
+  const tp = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(now);
+  const dp = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'long',month:'long',day:'numeric',year:'numeric'}).formatToParts(now);
+  const gt = t => tp.find(p=>p.type===t)?.value ?? '00';
+  const gd = t => dp.find(p=>p.type===t)?.value ?? '';
+  const h = gt('hour') === '24' ? '00' : gt('hour');
+  document.getElementById('clock').textContent = h+':'+gt('minute')+':'+gt('second');
+  document.getElementById('clock-date').textContent = gd('weekday')+', '+gd('month')+' '+gd('day')+' '+gd('year');
 }
 setInterval(tickClock,1000); tickClock();
 
@@ -581,6 +584,13 @@ def parse_log():
             state["status"] = "running"
 
     return state
+
+
+@app.after_request
+def no_cache(r):
+    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    r.headers["Pragma"] = "no-cache"
+    return r
 
 
 @app.route("/")
