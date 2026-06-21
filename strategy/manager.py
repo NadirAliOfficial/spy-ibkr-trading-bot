@@ -97,7 +97,7 @@ class OrderManager:
         elif self._s3_pid and order_id in (self._s3_pid, self._s3_cid):
             await self._on_stp3_filled(fill_price)
 
-        elif order_id == self._rev_id and self._rev_side == Side.FLAT:
+        elif order_id == self._rev_id and self._rev_side != Side.FLAT:
             await self._on_reverse_filled(fill_price)
 
     async def on_partial_fill(self, order_id: int):
@@ -164,7 +164,8 @@ class OrderManager:
         o = mkt(action, qty, 0, transmit=True)
         o.orderId = oid
         self._app.placeOrder(oid, CONTRACT, o)
-        self._rev_side, self._pos, self._pos_qty = Side.FLAT, Side.FLAT, 0
+        self._rev_side, self._rev_id = Side.FLAT, 0
+        self._pos, self._pos_qty = Side.FLAT, 0
         logger.info("Reverse flattened: %s %d", action, self._total)
         if self._entries < 4:
             await self._place_yz()
