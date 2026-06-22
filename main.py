@@ -171,11 +171,13 @@ async def run():
 
     sell_margin = await app.fetch_spy_margin()
     if sell_margin <= 0:
-        sell_margin = 960.0
+        # Paper accounts charge margin for both Y and Z simultaneously regardless
+        # of OCA groups. Effective per-share margin is ~$1,038-1,066 for SPY brackets.
+        sell_margin = 1150.0
         logger.info("Fallback sell margin: %.2f", sell_margin)
     else:
-        sell_margin = round(sell_margin * 1.05, 2)  # 5% buffer above actual
-        logger.info("SPY margin/share (with buffer): %.2f", sell_margin)
+        sell_margin = round(sell_margin * 2.3, 2)  # scale for combined Y+Z bracket exposure
+        logger.info("SPY margin/share (adjusted for Y+Z): %.2f", sell_margin)
 
     leg_qty = calc_leg_qty(elv, sell_margin)
     if leg_qty < 1:
