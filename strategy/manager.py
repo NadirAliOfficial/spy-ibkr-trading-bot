@@ -158,9 +158,12 @@ class OrderManager:
         await self._place_reverse("SELL" if prev == Side.LONG else "BUY", fill_price)
 
     async def _on_reverse_filled(self, fill_price: float):
-        self._pos = self._rev_side
+        side = self._rev_side
+        self._rev_side = Side.FLAT
+        self._rev_id = 0
+        self._pos = side
         self._pos_qty = self._total
-        logger.info("Reverse filled @ %.2f — now %s", fill_price, self._rev_side.name)
+        logger.info("Reverse filled @ %.2f — now %s", fill_price, side.name)
 
     async def _check_reverse_stop(self, price: float):
         if self._rev_side == Side.SHORT and price >= _rp(self._open + 0.01):
