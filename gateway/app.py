@@ -34,12 +34,12 @@ class IBApp(EWrapper, EClient):
 
         self._account_futures: dict[int, asyncio.Future] = {}
         self._contract_futures: dict[int, asyncio.Future] = {}
-        self._whatif_futures: dict[int, asyncio.Future] = {}
         self._positions_future: asyncio.Future | None = None
         self._positions: list[dict] = []
 
         self.equity_with_loan: float = 0.0
         self.sell_init_margin: float = 0.0
+        self.last_price: float = 0.0
         self._next_order_id: int = 1
 
     def next_id(self) -> int:
@@ -72,6 +72,8 @@ class IBApp(EWrapper, EClient):
 
     def tickPrice(self, reqId: TickerId, tickType: int, price: float, attrib):
         if price > 0:
+            if tickType in (4, 68):  # LAST / DELAYED_LAST
+                self.last_price = price
             self._enqueue(self.tick_queue, {
                 "type": "tick_price", "tickType": tickType,
                 "price": price, "ts": time.time(),
@@ -161,35 +163,6 @@ class IBApp(EWrapper, EClient):
             logger.info("Clean slate: %s %d SPY @ MKT", action, qty)
 
         self.cancelPositions()
-
-    # --- whatIf margin probe ---
-
-    def openOrder(self, orderId: int, contract, order, orderState):
-        fut = self._whatif_futures.pop(orderId, None)
-        if fut and not fut.done():
-            self._loop.call_soon_threadsafe(fut.set_result, orderState)
-
-    async def fetch_spy_margin(self) -> float:
-        from ibapi.order import Order
-        req_id = self.next_id()
-        fut = self._loop.create_future()
-        self._whatif_futures[req_id] = fut
-        o = Order()
-        o.action = "SELL"
-        o.totalQuantity = 1
-        o.orderType = "MKT"
-        o.eTradeOnly = False
-        o.firmQuoteOnly = False
-        o.whatIf = True
-        self.placeOrder(req_id, spy_contract(), o)
-        try:
-            state = await asyncio.wait_for(fut, timeout=15)
-            margin = abs(float(state.initMarginChange or 0))
-            logger.info("SPY sell margin/share: %.2f", margin)
-            return margin if margin > 10 else 0.0
-        except asyncio.TimeoutError:
-            logger.warning("whatIf margin probe timed out")
-            return 0.0
 
     # --- Orders ---
 
