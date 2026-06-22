@@ -169,7 +169,7 @@ async def run():
         sell_margin = round((app.sell_init_margin or 550.0) * 1.5, 2)
         logger.info("Fallback sell margin: %.2f", sell_margin)
 
-    leg_qty = calc_leg_qty(elv, sell_margin, config.EQUITY_PCT)
+    leg_qty = calc_leg_qty(elv, sell_margin)
     if leg_qty < 1:
         logger.error("leg_qty < 1 (ELV=%.2f margin=%.2f) — aborting", elv, sell_margin)
         return
@@ -178,11 +178,12 @@ async def run():
                 elv, sell_margin, leg_qty, leg_qty * 2)
 
     if app.account:
+        app.reqAccountUpdates(True, app.account)
         app.reqPnL(app.next_id(), app.account, "")
 
     candles = CandleBuilder()
     sim_sl = SimStopLoss()
-    order_mgr = OrderManager(app, leg_qty)
+    order_mgr = OrderManager(app, leg_qty, sell_margin)
     risk_mgr = RiskManager(elv)
 
     sim_end = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN)

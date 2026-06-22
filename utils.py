@@ -14,10 +14,11 @@ def et_time(hour: int, minute: int, second: int = 0) -> datetime.datetime:
     return now_et().replace(hour=hour, minute=minute, second=second, microsecond=0)
 
 
-def calc_leg_qty(equity: float, sell_init_margin: float, pct: float = 0.49) -> int:
+def calc_leg_qty(equity: float, sell_init_margin: float) -> int:
     if sell_init_margin <= 0:
         return 0
-    return max(1, math.floor(math.floor(equity / sell_init_margin) * pct))
+    total = math.floor(equity * 0.98 / sell_init_margin)
+    return max(1, total // 2)
 
 
 def parse_trading_hours(raw: str) -> list[tuple[datetime.datetime, datetime.datetime]]:

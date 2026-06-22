@@ -82,6 +82,13 @@ class IBApp(EWrapper, EClient):
         elif tag == "SellInitMarginReq" and currency == "USD":
             self.sell_init_margin = float(value)
 
+    def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):
+        if key == "EquityWithLoanValue":
+            try:
+                self.equity_with_loan = float(val)
+            except ValueError:
+                pass
+
     def accountSummaryEnd(self, reqId: int):
         fut = self._account_futures.pop(reqId, None)
         if fut and not fut.done():

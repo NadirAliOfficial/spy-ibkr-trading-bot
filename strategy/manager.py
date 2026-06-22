@@ -3,6 +3,7 @@ import time
 
 from gateway import spy_contract
 from strategy.orders import Side, OrderGroup, stp, mkt
+from utils import calc_leg_qty
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,11 @@ class OrderManager:
     1-second exit: halt candle if actual SL fires 2x in 1 second.
     """
 
-    def __init__(self, app, leg_qty: int):
+    def __init__(self, app, leg_qty: int, margin_per_share: float = 0.0):
         self._app = app
         self._leg = leg_qty
         self._total = leg_qty * 2
+        self._margin = margin_per_share
 
         self._open: float = 0.0
         self._entries: int = 0
@@ -64,6 +66,12 @@ class OrderManager:
         self._halted = False
         logger.info("Candle open: %.2f", open_price)
         if self._pos == Side.FLAT and self._rev_side == Side.FLAT:
+            if self._margin > 0 and self._app.equity_with_loan > 0:
+                new_leg = calc_leg_qty(self._app.equity_with_loan, self._margin)
+                if new_leg != self._leg:
+                    logger.info("Qty update: leg %d->%d (ELV=%.2f)", self._leg, new_leg, self._app.equity_with_loan)
+                self._leg = new_leg
+                self._total = self._leg * 2
             await self._place_yz()
 
     async def on_59th_second(self):
