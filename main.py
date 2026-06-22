@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+from datetime import timedelta
 
 import config
 from gateway import connect, spy_contract
@@ -50,6 +51,9 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2
             continue
         if tick_type not in (config.TICK_LAST, config.DTICK_LAST):
             continue
+
+        if now_et() >= session_end:
+            break
 
         candle, is_new = candles.process_tick(price, ts)
 
@@ -153,6 +157,18 @@ async def wait_until(hour: int, minute: int, label: str):
 
 
 async def run():
+    # If restarted after market close, sleep until tomorrow's pre-check
+    now = now_et()
+    eod = et_time(config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
+    if now >= eod:
+        tomorrow = (now + timedelta(days=1)).replace(
+            hour=config.PRE_CHECK_HOUR, minute=config.PRE_CHECK_MIN,
+            second=0, microsecond=0)
+        wait = (tomorrow - now).total_seconds()
+        logger.info("Past EOD — sleeping %.0fs until tomorrow %d:%02d ET",
+                    wait, config.PRE_CHECK_HOUR, config.PRE_CHECK_MIN)
+        await asyncio.sleep(wait)
+
     loop = asyncio.get_running_loop()
     app = connect(config.HOST, config.PORT, config.CLIENT_ID, loop)
 
@@ -223,12 +239,15 @@ async def run():
     app.cancelMktData(mkt_req_id)
     sim_sl_2.finalize()
     candles.finalize()
-    report = generate_report(sim_sl_2.records, candles.history)
-    print(report)
-    save_report(report, "post_trade_report_pm.txt")
-    email_report(sim_sl_2.records, candles.history,
-                 subject="SPY Bot — Post-Trade Report (12:30pm–4pm)")
-    logger.info("Phase 2 report emailed (12:30pm-4pm)")
+    if sim_sl_2.records:
+        report = generate_report(sim_sl_2.records, candles.history)
+        print(report)
+        save_report(report, "post_trade_report_pm.txt")
+        email_report(sim_sl_2.records, candles.history,
+                     subject="SPY Bot — Post-Trade Report (12:30pm–4pm)")
+        logger.info("Phase 2 report emailed (12:30pm-4pm)")
+    else:
+        logger.info("No phase 2 data — skipping PM report")
 
     app.disconnect()
     logger.info("Session complete")
