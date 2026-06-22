@@ -23,6 +23,7 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl: SimStopLoss,
     logger.info("Tick loop started")
     sim_active = True
     fired_59s = False
+    session_start_ts = et_time(config.OPEN_HOUR, config.OPEN_MIN).timestamp()
 
     while not risk_mgr.done:
         try:
@@ -36,6 +37,9 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl: SimStopLoss,
             continue
 
         tick_type, price, ts = event["tickType"], event["price"], event["ts"]
+
+        if ts < session_start_ts:
+            continue
 
         if tick_type in (config.TICK_BID, config.DTICK_BID):
             order_mgr.last_bid = price
