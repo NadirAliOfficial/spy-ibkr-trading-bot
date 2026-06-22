@@ -34,6 +34,7 @@ class IBApp(EWrapper, EClient):
 
         self._account_futures: dict[int, asyncio.Future] = {}
         self._contract_futures: dict[int, asyncio.Future] = {}
+        self._whatif_futures: dict[int, asyncio.Future] = {}
 
         self.equity_with_loan: float = 0.0
         self.sell_init_margin: float = 0.0
@@ -119,6 +120,33 @@ class IBApp(EWrapper, EClient):
         self.reqContractDetails(req_id, spy_contract())
         details = await asyncio.wait_for(fut, timeout=15)
         return details.tradingHours
+
+    # --- whatIf margin probe ---
+
+    def openOrder(self, orderId: int, contract, order, orderState):
+        fut = self._whatif_futures.pop(orderId, None)
+        if fut and not fut.done():
+            self._loop.call_soon_threadsafe(fut.set_result, orderState)
+
+    async def fetch_spy_margin(self) -> float:
+        from ibapi.order import Order
+        req_id = self.next_id()
+        fut = self._loop.create_future()
+        self._whatif_futures[req_id] = fut
+        o = Order()
+        o.action = "SELL"
+        o.totalQuantity = 1
+        o.orderType = "MKT"
+        o.whatIf = True
+        self.placeOrder(req_id, spy_contract(), o)
+        try:
+            state = await asyncio.wait_for(fut, timeout=15)
+            margin = abs(float(state.initMarginChange or 0))
+            logger.info("SPY sell margin/share: %.2f", margin)
+            return margin if margin > 10 else 0.0
+        except asyncio.TimeoutError:
+            logger.warning("whatIf margin probe timed out")
+            return 0.0
 
     # --- Orders ---
 

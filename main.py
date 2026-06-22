@@ -164,14 +164,18 @@ async def run():
 
     await wait_until(config.OPEN_HOUR, config.OPEN_MIN, "9:30am open")
 
-    elv, sell_margin = await app.fetch_account_summary()
+    elv, _ = await app.fetch_account_summary()
     if elv <= 0:
         logger.error("ELV=0 — aborting")
         return
 
-    if sell_margin <= 0 or sell_margin > elv:
-        sell_margin = round((app.sell_init_margin or 550.0) * 1.5, 2)
+    sell_margin = await app.fetch_spy_margin()
+    if sell_margin <= 0:
+        sell_margin = 960.0
         logger.info("Fallback sell margin: %.2f", sell_margin)
+    else:
+        sell_margin = round(sell_margin * 1.05, 2)  # 5% buffer above actual
+        logger.info("SPY margin/share (with buffer): %.2f", sell_margin)
 
     leg_qty = calc_leg_qty(elv, sell_margin)
     if leg_qty < 1:
