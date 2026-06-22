@@ -154,6 +154,8 @@ class IBApp(EWrapper, EClient):
             o.action = action
             o.totalQuantity = qty
             o.orderType = "MKT"
+            o.eTradeOnly = False
+            o.firmQuoteOnly = False
             o.transmit = True
             self.placeOrder(oid, spy_contract(), o)
             logger.info("Clean slate: %s %d SPY @ MKT", action, qty)
@@ -176,6 +178,8 @@ class IBApp(EWrapper, EClient):
         o.action = "SELL"
         o.totalQuantity = 1
         o.orderType = "MKT"
+        o.eTradeOnly = False
+        o.firmQuoteOnly = False
         o.whatIf = True
         self.placeOrder(req_id, spy_contract(), o)
         try:
