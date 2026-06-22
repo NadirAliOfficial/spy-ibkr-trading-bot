@@ -35,6 +35,8 @@ class IBApp(EWrapper, EClient):
         self._account_futures: dict[int, asyncio.Future] = {}
         self._contract_futures: dict[int, asyncio.Future] = {}
         self._whatif_futures: dict[int, asyncio.Future] = {}
+        self._positions_future: asyncio.Future | None = None
+        self._positions: list[dict] = []
 
         self.equity_with_loan: float = 0.0
         self.sell_init_margin: float = 0.0
@@ -120,6 +122,43 @@ class IBApp(EWrapper, EClient):
         self.reqContractDetails(req_id, spy_contract())
         details = await asyncio.wait_for(fut, timeout=15)
         return details.tradingHours
+
+    # --- Session cleanup ---
+
+    def position(self, account: str, contract, pos: float, avgCost: float):
+        if contract.symbol == "SPY" and pos != 0:
+            self._positions.append({"pos": pos, "avgCost": avgCost})
+
+    def positionEnd(self):
+        if self._positions_future and not self._positions_future.done():
+            self._loop.call_soon_threadsafe(self._positions_future.set_result, self._positions[:])
+
+    async def clean_slate(self):
+        self.reqGlobalCancel()
+        logger.info("Global cancel sent")
+
+        self._positions = []
+        self._positions_future = self._loop.create_future()
+        self.reqPositions()
+        try:
+            positions = await asyncio.wait_for(self._positions_future, timeout=10)
+        except asyncio.TimeoutError:
+            positions = []
+
+        for p in positions:
+            action = "SELL" if p["pos"] > 0 else "BUY"
+            qty = abs(int(p["pos"]))
+            oid = self.next_id()
+            from ibapi.order import Order
+            o = Order()
+            o.action = action
+            o.totalQuantity = qty
+            o.orderType = "MKT"
+            o.transmit = True
+            self.placeOrder(oid, spy_contract(), o)
+            logger.info("Clean slate: %s %d SPY @ MKT", action, qty)
+
+        self.cancelPositions()
 
     # --- whatIf margin probe ---
 

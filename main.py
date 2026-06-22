@@ -164,6 +164,9 @@ async def run():
 
     await wait_until(config.OPEN_HOUR, config.OPEN_MIN, "9:30am open")
 
+    await app.clean_slate()
+    await asyncio.sleep(2)
+
     elv, _ = await app.fetch_account_summary()
     if elv <= 0:
         logger.error("ELV=0 — aborting")
