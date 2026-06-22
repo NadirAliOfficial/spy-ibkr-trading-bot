@@ -103,6 +103,11 @@ class OrderManager:
     async def on_partial_fill(self, order_id: int):
         self._app.cancelOrder(order_id)
 
+    def on_reverse_rejected(self, order_id: int):
+        logger.warning("Reverse %d rejected — resetting to FLAT", order_id)
+        self._rev_side = Side.FLAT
+        self._rev_id = 0
+
     # ── Entry fills ───────────────────────────────────────────────────────
 
     async def _on_y_filled(self, fill_price: float):
@@ -178,7 +183,7 @@ class OrderManager:
             self._cancel_stp3()
         elif price <= stop and self._s3_pid:
             new = _rp(price - 0.01)
-            if abs(new - self._s3_px) >= 0.01:
+            if abs(new - self._s3_px) >= 0.05:
                 await self._replace_stp3("SELL", new)
         elif price <= stop and not self._s3_pid:
             await self._place_stp3("SELL", stop)
@@ -189,7 +194,7 @@ class OrderManager:
             self._cancel_stp3()
         elif price >= stop and self._s3_pid:
             new = _rp(price + 0.01)
-            if abs(new - self._s3_px) >= 0.01:
+            if abs(new - self._s3_px) >= 0.05:
                 await self._replace_stp3("BUY", new)
         elif price >= stop and not self._s3_pid:
             await self._place_stp3("BUY", stop)
@@ -204,9 +209,10 @@ class OrderManager:
         z_pid, z_cid = self._app.next_id(), self._app.next_id()
         buy_px, sell_px = _rp(self._open + 0.01), _rp(self._open - 0.01)
 
-        yp = stp("BUY",  self._leg, buy_px,  transmit=False);  yp.orderId = y_pid
+        oca = f"YZ_{y_pid}"
+        yp = stp("BUY",  self._leg, buy_px,  transmit=False);  yp.orderId = y_pid; yp.ocaGroup = oca; yp.ocaType = 1
         yc = mkt("BUY",  self._leg, y_pid,   transmit=True);   yc.orderId = y_cid
-        zp = stp("SELL", self._leg, sell_px, transmit=False);  zp.orderId = z_pid
+        zp = stp("SELL", self._leg, sell_px, transmit=False);  zp.orderId = z_pid; zp.ocaGroup = oca; zp.ocaType = 1
         zc = mkt("SELL", self._leg, z_pid,   transmit=True);   zc.orderId = z_cid
 
         for oid, order in ((y_pid, yp), (y_cid, yc), (z_pid, zp), (z_cid, zc)):

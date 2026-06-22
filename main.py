@@ -12,7 +12,7 @@ from utils import now_et, et_time, is_early_close, parse_trading_hours, calc_leg
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("spy_bot.log")],
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("main")
 
@@ -93,6 +93,8 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
         elif etype == "order_status":
             if event["status"] == "PartiallyFilled" and event["remaining"] > 0:
                 await order_mgr.on_partial_fill(event["orderId"])
+            elif event["status"] in ("Cancelled", "Inactive") and event["orderId"] == order_mgr._rev_id:
+                order_mgr.on_reverse_rejected(event["orderId"])
 
         elif etype == "pnl":
             daily_pnl = event["dailyPnL"]
