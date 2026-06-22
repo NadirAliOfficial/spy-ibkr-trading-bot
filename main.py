@@ -14,6 +14,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+logging.getLogger("ibapi").setLevel(logging.WARNING)
 logger = logging.getLogger("main")
 
 
@@ -110,8 +111,9 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
 async def noon_exit_task(order_mgr: OrderManager, risk_mgr: RiskManager):
     target = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN)
     wait = (target - now_et()).total_seconds()
-    if wait > 0:
-        await asyncio.sleep(wait)
+    if wait <= 0:
+        return  # already past noon window at startup — skip
+    await asyncio.sleep(wait)
     if risk_mgr.check_noon(risk_mgr.current_pnl):
         logger.warning("12:30pm exit: pnl=%.2f < 4.5%%", risk_mgr.current_pnl)
         await order_mgr.exit_all("12:30pm noon exit")
@@ -119,9 +121,10 @@ async def noon_exit_task(order_mgr: OrderManager, risk_mgr: RiskManager):
 
 async def eod_exit_task(order_mgr: OrderManager, risk_mgr: RiskManager):
     target = et_time(config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
-    wait = (target - now_et()).total_seconds()
-    if wait > 0:
-        await asyncio.sleep(wait)
+    while now_et() < target:
+        if risk_mgr.done:
+            return
+        await asyncio.sleep(5.0)
     if not risk_mgr.done:
         risk_mgr.done = True
         await order_mgr.exit_all("3:59pm eod")
@@ -156,7 +159,8 @@ async def run():
     logger.info("Session close: %s ET", sessions[0][1].strftime("%H:%M"))
 
     app.reqMarketDataType(3)  # delayed for paper; remove for live with subscription
-    app.reqMktData(app.next_id(), spy_contract(), "", False, False, [])
+    mkt_req_id = app.next_id()
+    app.reqMktData(mkt_req_id, spy_contract(), "", False, False, [])
 
     await wait_until(config.OPEN_HOUR, config.OPEN_MIN, "9:30am open")
 
@@ -196,6 +200,7 @@ async def run():
         eod_exit_task(order_mgr, risk_mgr),
     )
 
+    app.cancelMktData(mkt_req_id)
     sim_sl.finalize()
     candles.finalize()
     report = generate_report(sim_sl.records, candles.history)
