@@ -48,7 +48,12 @@ class IBApp(EWrapper, EClient):
         return oid
 
     def _enqueue(self, queue: asyncio.Queue, event: dict):
-        self._loop.call_soon_threadsafe(queue.put_nowait, event)
+        def _put():
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
+        self._loop.call_soon_threadsafe(_put)
 
     # --- Connection ---
 
