@@ -261,6 +261,7 @@ class OrderManager:
     # ── Global exit ───────────────────────────────────────────────────────
 
     async def exit_all(self, reason: str = ""):
+        self._halted = True  # block concurrent on_tick from re-entering
         logger.info("Exit all: %s", reason)
         self._cancel_group(self._y)
         self._cancel_group(self._z)
