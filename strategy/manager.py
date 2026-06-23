@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 
@@ -172,6 +173,7 @@ class OrderManager:
         self._rev_side = Side.FLAT
         self._rev_stp_pid = self._rev_stp_cid = 0
         self._pos_qty = 0
+        await asyncio.sleep(1)  # let IBKR settle position before new orders
         if self._entries < 4 and not self._halted:
             await self._place_yz()
 

@@ -203,7 +203,7 @@ async def run():
     # Paper charges Y and Z margin simultaneously regardless of OCA.
     # Observed: ~143% of SPY price per bracket slot. Use 150% for buffer.
     spy_price = app.last_price if app.last_price > 10 else 750.0
-    sell_margin = max(round(spy_price * 1.5, 2), 950.0)
+    sell_margin = max(round(spy_price * 1.6, 2), 950.0)
     logger.info("SPY last=%.2f  margin/share (Y+Z effective)=%.2f", spy_price, sell_margin)
 
     leg_qty = calc_leg_qty(elv, sell_margin)
