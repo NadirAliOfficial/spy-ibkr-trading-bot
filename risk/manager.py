@@ -7,12 +7,15 @@ class RiskManager:
     """
     Hard SL, TP1, TP2 trailing exits. All thresholds against 9:30am equity.
     current_pnl is updated by the order loop and read by timed exit tasks.
+    PnL baseline is captured on the first tick so only RTH activity is counted.
     """
 
     def __init__(self, starting_equity: float):
         self._eq = starting_equity
         self.current_pnl: float = 0.0
         self.done: bool = False
+
+        self._pnl_baseline: float | None = None  # set on first 9:30am PnL tick
 
         self._hard_sl = -self._eq * 0.02
 
@@ -23,10 +26,15 @@ class RiskManager:
         self._tp2_trail = self._eq * 0.10
         self._tp2_peak_pct = 0.105
 
-    def check(self, pnl: float) -> str | None:
+    def check(self, daily_pnl: float) -> str | None:
         if self.done:
             return None
 
+        if self._pnl_baseline is None:
+            self._pnl_baseline = daily_pnl
+            logger.info("PnL baseline (9:30am RTH): %.2f", self._pnl_baseline)
+
+        pnl = daily_pnl - self._pnl_baseline  # RTH-only PnL
         self.current_pnl = pnl
         pct = pnl / self._eq
 
