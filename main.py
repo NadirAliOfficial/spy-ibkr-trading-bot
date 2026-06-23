@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 from datetime import timedelta
+from pathlib import Path
 
 import config
 from gateway import connect, spy_contract
@@ -17,6 +18,23 @@ logging.basicConfig(
 )
 logging.getLogger("ibapi").setLevel(logging.WARNING)
 logger = logging.getLogger("main")
+
+# Marks the day as finished so a mid-session restart does not re-enter trading
+# after a terminal exit (12:30pm exit, hard SL, TP, or EOD). No re-entry.
+STATE_FILE = Path(__file__).parent / "day_state.txt"
+
+
+def _today_str() -> str:
+    return now_et().strftime("%Y-%m-%d")
+
+
+def mark_day_done():
+    STATE_FILE.write_text(_today_str())
+    logger.info("Day marked done: %s", _today_str())
+
+
+def already_done_today() -> bool:
+    return STATE_FILE.exists() and STATE_FILE.read_text().strip() == _today_str()
 
 
 async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2: SimStopLoss,
@@ -157,16 +175,18 @@ async def wait_until(hour: int, minute: int, label: str):
 
 
 async def run():
-    # If restarted after market close, sleep until tomorrow's pre-check
+    # If restarted after market close OR the day already finished (terminal
+    # exit), sleep until tomorrow's pre-check so we never re-enter the session.
     now = now_et()
     eod = et_time(config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
-    if now >= eod:
+    if now >= eod or already_done_today():
+        reason = "past EOD" if now >= eod else "day already done"
         tomorrow = (now + timedelta(days=1)).replace(
             hour=config.PRE_CHECK_HOUR, minute=config.PRE_CHECK_MIN,
             second=0, microsecond=0)
         wait = (tomorrow - now).total_seconds()
-        logger.info("Past EOD — sleeping %.0fs until tomorrow %d:%02d ET",
-                    wait, config.PRE_CHECK_HOUR, config.PRE_CHECK_MIN)
+        logger.info("%s — sleeping %.0fs until tomorrow %d:%02d ET",
+                    reason, wait, config.PRE_CHECK_HOUR, config.PRE_CHECK_MIN)
         await asyncio.sleep(wait)
 
     loop = asyncio.get_running_loop()
@@ -235,6 +255,9 @@ async def run():
         noon_report_task(sim_sl_1, candles, order_mgr, risk_mgr),
         eod_exit_task(order_mgr, risk_mgr),
     )
+
+    # Session is over (terminal exit or EOD) — block re-entry on restart today
+    mark_day_done()
 
     app.cancelMktData(mkt_req_id)
     sim_sl_2.finalize()

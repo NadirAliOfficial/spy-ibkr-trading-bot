@@ -4,4 +4,5 @@ __pycache__/
 .env
 *.log
 post_trade_report.txt
+day_state.txt
 .DS_Store
