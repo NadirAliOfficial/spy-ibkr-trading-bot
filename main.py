@@ -123,10 +123,12 @@ async def noon_report_task(sim_sl_1: SimStopLoss, candles: CandleBuilder,
     await asyncio.sleep(wait)
 
     sim_sl_1.finalize()
-    report = generate_report(sim_sl_1.records, candles.history)
+    # candles.history at 12:30pm contains only AM candles (9:30–12:30)
+    am_candles = list(candles.history)
+    report = generate_report(sim_sl_1.records, am_candles)
     print(report)
     save_report(report, "post_trade_report_am.txt")
-    email_report(sim_sl_1.records, candles.history,
+    email_report(sim_sl_1.records, am_candles,
                  subject="SPY Bot — Post-Trade Report (9:30am–12:30pm)")
     logger.info("Phase 1 report emailed (9:30am-12:30pm)")
 
@@ -238,11 +240,13 @@ async def run():
     sim_sl_2.finalize()
     candles.finalize()
     if sim_sl_2.records:
-        report = generate_report(sim_sl_2.records, candles.history)
+        sim_end_ts = sim_end.timestamp()
+        pm_candles = [c for c in candles.history if c.minute_ts >= sim_end_ts]
+        report = generate_report(sim_sl_2.records, pm_candles)
         print(report)
         save_report(report, "post_trade_report_pm.txt")
-        email_report(sim_sl_2.records, candles.history,
-                     subject="SPY Bot — Post-Trade Report (12:30pm–4pm)")
+        email_report(sim_sl_2.records, pm_candles,
+                     subject="SPY Bot — Post-Trade Report (12:30pm–4:00pm)")
         logger.info("Phase 2 report emailed (12:30pm-4pm)")
     else:
         logger.info("No phase 2 data — skipping PM report")

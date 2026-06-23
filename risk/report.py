@@ -32,7 +32,7 @@ def _build_data(sim_records: list[CandleRecord], candles: list[Candle]):
 def generate_report(sim_records: list[CandleRecord], candles: list[Candle]) -> str:
     rows, mean = _build_data(sim_records, candles)
 
-    lines = ["Sample Post Trade Report :", ""]
+    lines = ["SPY Bot — Post-Trade Report", ""]
 
     if rows:
         w1, w2, w3 = 40, 13, 11
@@ -75,7 +75,7 @@ def _generate_html(sim_records: list[CandleRecord], candles: list[Candle]) -> st
 
     return f"""
 <div style="font-family:Arial,sans-serif;font-size:14px;color:#111;max-width:540px;margin:0 auto;">
-  <p style="font-size:16px;margin-bottom:24px;">Sample Post Trade Report :</p>
+  <p style="font-size:16px;margin-bottom:24px;">SPY Bot — Post-Trade Report</p>
   {no_data}
   {"" if not rows else f'''
   <table style="border-collapse:collapse;width:100%;">

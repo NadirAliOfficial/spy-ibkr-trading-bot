@@ -52,10 +52,12 @@ class OrderManager:
         self._halted = False
         logger.info("Candle open: %.2f", open_price)
         if self._pos == Side.FLAT and self._rev_side == Side.FLAT:
-            if self._margin > 0 and self._app.equity_with_loan > 0:
+            if self._app.equity_with_loan > 0 and open_price > 10:
+                self._margin = max(round(open_price * 1.6, 2), 950.0)
                 new_leg = calc_leg_qty(self._app.equity_with_loan, self._margin)
                 if new_leg != self._leg:
-                    logger.info("Qty update: leg %d->%d (ELV=%.2f)", self._leg, new_leg, self._app.equity_with_loan)
+                    logger.info("Qty update: leg %d->%d (ELV=%.2f margin=%.2f)",
+                                self._leg, new_leg, self._app.equity_with_loan, self._margin)
                 self._leg = new_leg
                 self._total = self._leg * 2
             await self._place_yz()
