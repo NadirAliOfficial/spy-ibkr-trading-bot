@@ -71,7 +71,8 @@ class OrderManager:
             await self._manage_long(price)
         elif self._pos == Side.SHORT:
             await self._manage_short(price)
-        elif self._pos == Side.FLAT and sim_hits >= 2 and self._entries < 4:
+        elif (self._pos == Side.FLAT and self._rev_side == Side.FLAT and
+              sim_hits >= 2 and self._entries < 4 and self._y is None):
             await self._place_yz()
 
     # ── Fill routing ──────────────────────────────────────────────────────
