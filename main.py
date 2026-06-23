@@ -102,8 +102,6 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
         elif etype == "order_status":
             if event["status"] == "PartiallyFilled" and event["remaining"] > 0:
                 await order_mgr.on_partial_fill(event["orderId"])
-            elif event["status"] in ("Cancelled", "Inactive") and event["orderId"] == order_mgr._rev_id:
-                order_mgr.on_reverse_rejected(event["orderId"])
 
         elif etype == "pnl":
             daily_pnl = event["dailyPnL"]
