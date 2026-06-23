@@ -12,23 +12,6 @@ _rp = lambda p: round(round(p / 0.01) * 0.01, 2)
 
 
 class OrderManager:
-    """
-    Y/Z OCO candle strategy.
-
-    ORDER Y (LONG):  BUY STP @ Open+0.01 — STP3 exit @ Open-0.01
-      Cancel STP3 when price >= Open+0.01 (profit zone); roll down when <= Open-0.01.
-      On STP3 fire: reverse SHORT via SELL STP @ Bid-0.03.
-      Post-reverse MKT stop if price >= Open+0.01.
-
-    ORDER Z (SHORT): SELL STP @ Open-0.01 — STP3 exit @ Open+0.01
-      Cancel STP3 when price <= Open-0.01 (profit zone); roll up when >= Open+0.01.
-      On STP3 fire: reverse LONG via BUY STP @ Ask+0.03.
-      Post-reverse MKT stop if price <= Open-0.01.
-
-    Y2/Z2: re-enter when sim SL hits >= 2 this candle. Max 4 entries/candle.
-    1-second exit: halt candle if actual SL fires 2x in 1 second.
-    """
-
     def __init__(self, app, leg_qty: int, margin_per_share: float = 0.0):
         self._app = app
         self._leg = leg_qty
@@ -45,12 +28,14 @@ class OrderManager:
         self._s3_pid: int = 0
         self._s3_cid: int = 0
         self._s3_px: float = 0.0
+        self._s3_reverse: bool = False
 
         self._pos: Side = Side.FLAT
         self._pos_qty: int = 0
 
-        self._rev_id: int = 0
         self._rev_side: Side = Side.FLAT
+        self._rev_stp_pid: int = 0
+        self._rev_stp_cid: int = 0
 
         self._sl_count: int = 0
         self._sl_sec: int = -1
@@ -81,7 +66,7 @@ class OrderManager:
         if self._halted:
             return
         if self._rev_side != Side.FLAT:
-            await self._check_reverse_stop(price)
+            pass  # post-rev SL is a live order — no tick-based check needed
         elif self._pos == Side.LONG:
             await self._manage_long(price)
         elif self._pos == Side.SHORT:
@@ -102,19 +87,17 @@ class OrderManager:
             self._z.entry_price = fill_price
             await self._on_z_filled(fill_price)
 
-        elif self._s3_pid and order_id in (self._s3_pid, self._s3_cid):
+        elif self._s3_cid and order_id == self._s3_cid:
             await self._on_stp3_filled(fill_price)
 
-        elif order_id == self._rev_id and self._rev_side != Side.FLAT:
-            await self._on_reverse_filled(fill_price)
+        elif self._rev_stp_cid and order_id == self._rev_stp_cid:
+            await self._on_post_rev_sl_filled(fill_price)
 
     async def on_partial_fill(self, order_id: int):
         self._app.cancelOrder(order_id)
 
     def on_reverse_rejected(self, order_id: int):
-        logger.warning("Reverse %d rejected — resetting to FLAT", order_id)
-        self._rev_side = Side.FLAT
-        self._rev_id = 0
+        pass
 
     # ── Entry fills ───────────────────────────────────────────────────────
 
@@ -123,67 +106,72 @@ class OrderManager:
         self._cancel_group(self._z)
         self._pos = Side.LONG
         self._pos_qty = self._total
-        await self._place_stp3("SELL", _rp(self._open - 0.01))
+        reverse = self._entries < 4
+        await self._place_stp3("SELL", _rp(self._open - 0.01), reverse=reverse)
 
     async def _on_z_filled(self, fill_price: float):
         logger.info("Z SHORT filled @ %.2f", fill_price)
         self._cancel_group(self._y)
         self._pos = Side.SHORT
         self._pos_qty = self._total
-        await self._place_stp3("BUY", _rp(self._open + 0.01))
+        reverse = self._entries < 4
+        await self._place_stp3("BUY", _rp(self._open + 0.01), reverse=reverse)
 
-    # ── STP3 logic ────────────────────────────────────────────────────────
+    # ── STP3 / reverse logic ──────────────────────────────────────────────
 
     async def _on_stp3_filled(self, fill_price: float):
         sec = int(time.time())
         self._sl_count = self._sl_count + 1 if sec == self._sl_sec else 1
         self._sl_sec = sec
 
-        prev = self._pos
+        was_long = self._pos == Side.LONG
+        is_reverse = self._s3_reverse
+
         self._pos, self._pos_qty = Side.FLAT, 0
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
-        logger.info("STP3 filled @ %.2f (SL/s: %d)", fill_price, self._sl_count)
+        self._s3_reverse = False
+        logger.info("STP3 filled @ %.2f (SL/s: %d, reverse=%s)", fill_price, self._sl_count, is_reverse)
 
         if self._sl_count >= 2:
             logger.warning("1-second exit: SL fired 2x — halting candle")
             self._halted = True
+            if is_reverse:
+                # Combined order opened a new position — flatten it immediately
+                action = "BUY" if was_long else "SELL"
+                oid = self._app.next_id()
+                o = mkt(action, self._total, 0, transmit=True)
+                o.orderId = oid
+                self._app.placeOrder(oid, CONTRACT, o)
+                logger.info("1s halt flatten: %s %d", action, self._total)
             return
 
-        if self._entries >= 4:
-            logger.info("4th trade SL — no reverse, candle halted")
+        if not is_reverse:
+            # 4th trade or non-reverse: candle halted, no further action
+            logger.info("Exit only (no reverse) — candle halted")
             self._halted = True
             return
 
-        await self._place_reverse("SELL" if prev == Side.LONG else "BUY", fill_price)
-
-    async def _on_reverse_filled(self, fill_price: float):
-        side = self._rev_side
-        self._rev_side = Side.FLAT
-        self._rev_id = 0
-        self._pos = side
+        # Combined exit+reverse fired: position is now opposite
+        new_side = Side.SHORT if was_long else Side.LONG
+        self._rev_side = new_side
         self._pos_qty = self._total
-        logger.info("Reverse filled @ %.2f — now %s", fill_price, side.name)
+        logger.info("Reverse entered: now %s %d", new_side.name, self._total)
 
-    async def _check_reverse_stop(self, price: float):
-        if self._rev_side == Side.SHORT and price >= _rp(self._open + 0.01):
-            logger.info("Reverse SHORT stop @ %.2f", price)
-            await self._flatten_reverse()
-        elif self._rev_side == Side.LONG and price <= _rp(self._open - 0.01):
-            logger.info("Reverse LONG stop @ %.2f", price)
-            await self._flatten_reverse()
+        if new_side == Side.SHORT:
+            stop_px = _rp(self._open + 0.01)
+            sl_action = "BUY"
+        else:
+            stop_px = _rp(self._open - 0.01)
+            sl_action = "SELL"
+        await self._place_post_rev_sl(sl_action, stop_px)
 
-    async def _flatten_reverse(self):
-        action = "BUY" if self._rev_side == Side.SHORT else "SELL"
-        oid = self._app.next_id()
-        qty = self._pos_qty or self._total
-        o = mkt(action, qty, 0, transmit=True)
-        o.orderId = oid
-        self._app.placeOrder(oid, CONTRACT, o)
-        self._rev_side, self._rev_id = Side.FLAT, 0
-        self._pos, self._pos_qty = Side.FLAT, 0
-        logger.info("Reverse flattened: %s %d", action, self._total)
-        if self._entries < 4:
+    async def _on_post_rev_sl_filled(self, fill_price: float):
+        logger.info("Post-rev SL filled @ %.2f — FLAT", fill_price)
+        self._rev_side = Side.FLAT
+        self._rev_stp_pid = self._rev_stp_cid = 0
+        self._pos_qty = 0
+        if self._entries < 4 and not self._halted:
             await self._place_yz()
 
     # ── STP3 position management ──────────────────────────────────────────
@@ -197,7 +185,7 @@ class OrderManager:
             if abs(new - self._s3_px) >= 0.05:
                 await self._replace_stp3("SELL", new)
         elif price <= stop and not self._s3_pid:
-            await self._place_stp3("SELL", stop)
+            await self._place_stp3("SELL", stop, reverse=self._entries < 4)
 
     async def _manage_short(self, price: float):
         favor, stop = _rp(self._open - 0.01), _rp(self._open + 0.01)
@@ -208,7 +196,7 @@ class OrderManager:
             if abs(new - self._s3_px) >= 0.05:
                 await self._replace_stp3("BUY", new)
         elif price >= stop and not self._s3_pid:
-            await self._place_stp3("BUY", stop)
+            await self._place_stp3("BUY", stop, reverse=self._entries < 4)
 
     # ── Order placement ───────────────────────────────────────────────────
 
@@ -234,14 +222,16 @@ class OrderManager:
         self._entries += 1
         logger.info("Y/Z OCO: BUY=%.2f SELL=%.2f entry#%d", buy_px, sell_px, self._entries)
 
-    async def _place_stp3(self, action: str, stop_px: float):
+    async def _place_stp3(self, action: str, stop_px: float, reverse: bool = False):
         pid, cid = self._app.next_id(), self._app.next_id()
-        p = stp(action, 1, stop_px, transmit=False);            p.orderId = pid
-        c = mkt(action, self._total - 1, pid, transmit=True);  c.orderId = cid
+        child_qty = (2 * self._total - 1) if reverse else (self._total - 1)
+        p = stp(action, 1, stop_px, transmit=False); p.orderId = pid
+        c = mkt(action, child_qty, pid, transmit=True); c.orderId = cid
         self._app.placeOrder(pid, CONTRACT, p)
         self._app.placeOrder(cid, CONTRACT, c)
         self._s3_pid, self._s3_cid, self._s3_px = pid, cid, stop_px
-        logger.info("STP3: %s @ %.2f", action, stop_px)
+        self._s3_reverse = reverse
+        logger.info("STP3: %s @ %.2f qty=1+%d reverse=%s", action, stop_px, child_qty, reverse)
 
     def _cancel_stp3(self):
         for oid in (self._s3_pid, self._s3_cid):
@@ -249,25 +239,23 @@ class OrderManager:
                 self._app.cancelOrder(oid)
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
+        self._s3_reverse = False
 
     async def _replace_stp3(self, action: str, new_px: float):
+        reverse = self._s3_reverse
         self._cancel_stp3()
-        await self._place_stp3(action, new_px)
+        await self._place_stp3(action, new_px, reverse=reverse)
         logger.debug("STP3 rolled -> %.2f", new_px)
 
-    async def _place_reverse(self, action: str, ref: float):
-        pid = self._app.next_id()
-        if action == "SELL":
-            px = _rp((self.last_bid or ref) - 0.03)
-            self._rev_side = Side.SHORT
-        else:
-            px = _rp((self.last_ask or ref) + 0.03)
-            self._rev_side = Side.LONG
-        o = stp(action, self._total, px, transmit=True)
-        o.orderId = pid
-        self._app.placeOrder(pid, CONTRACT, o)
-        self._rev_id = pid
-        logger.info("Reverse: %s STP @ %.2f", action, px)
+    async def _place_post_rev_sl(self, action: str, stop_px: float):
+        pid, cid = self._app.next_id(), self._app.next_id()
+        p = stp(action, 1, stop_px, transmit=False); p.orderId = pid
+        c = mkt(action, self._total - 1, pid, transmit=True); c.orderId = cid
+        self._app.placeOrder(pid, CONTRACT, p)
+        self._app.placeOrder(cid, CONTRACT, c)
+        self._rev_stp_pid = pid
+        self._rev_stp_cid = cid
+        logger.info("Post-rev SL: %s @ %.2f qty=1+%d", action, stop_px, self._total - 1)
 
     # ── Global exit ───────────────────────────────────────────────────────
 
@@ -276,27 +264,32 @@ class OrderManager:
         self._cancel_group(self._y)
         self._cancel_group(self._z)
         self._cancel_stp3()
-        if self._rev_id:
-            self._app.cancelOrder(self._rev_id)
+        for oid in (self._rev_stp_pid, self._rev_stp_cid):
+            if oid:
+                self._app.cancelOrder(oid)
 
-        rev_qty = self._total * 2 if self._rev_side != Side.FLAT else 0
-        qty = self._pos_qty or rev_qty
-        side = self._pos if self._pos != Side.FLAT else self._rev_side
-
-        if side != Side.FLAT and qty > 0:
-            action = "SELL" if side == Side.LONG else "BUY"
+        if self._pos != Side.FLAT and self._pos_qty > 0:
+            action = "SELL" if self._pos == Side.LONG else "BUY"
             oid = self._app.next_id()
-            o = mkt(action, qty, 0, transmit=True)
+            o = mkt(action, self._pos_qty, 0, transmit=True)
             o.orderId = oid
             self._app.placeOrder(oid, CONTRACT, o)
-            logger.info("Flatten: %s %d", action, qty)
+            logger.info("Flatten pos: %s %d", action, self._pos_qty)
+        elif self._rev_side != Side.FLAT and self._pos_qty > 0:
+            action = "BUY" if self._rev_side == Side.SHORT else "SELL"
+            oid = self._app.next_id()
+            o = mkt(action, self._pos_qty, 0, transmit=True)
+            o.orderId = oid
+            self._app.placeOrder(oid, CONTRACT, o)
+            logger.info("Flatten rev: %s %d", action, self._pos_qty)
 
         self._y = self._z = None
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
+        self._s3_reverse = False
         self._pos, self._pos_qty = Side.FLAT, 0
-        self._rev_id = 0
         self._rev_side = Side.FLAT
+        self._rev_stp_pid = self._rev_stp_cid = 0
 
     def _cancel_group(self, g: OrderGroup | None):
         if g and not g.filled and not g.cancelled:
