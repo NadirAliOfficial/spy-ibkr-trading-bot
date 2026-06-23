@@ -20,8 +20,9 @@ class OrderManager:
         self._margin = margin_per_share
 
         self._open: float = 0.0
-        self._entries: int = 0
+        self._entries: int = 0          # position-opens this candle (cap 4)
         self._halted: bool = False
+        self._pending: bool = False     # Y/Z placed, awaiting fill
 
         self._y: OrderGroup | None = None
         self._z: OrderGroup | None = None
@@ -50,35 +51,40 @@ class OrderManager:
         self._open = open_price
         self._entries = 0
         self._halted = False
+        self._pending = False
+        self._sl_count = 0
+        self._sl_sec = -1
         logger.info("Candle open: %.2f", open_price)
         if self._pos == Side.FLAT and self._rev_side == Side.FLAT:
-            if self._app.equity_with_loan > 0 and open_price > 10:
-                self._margin = max(round(open_price * 1.6, 2), 950.0)
-                new_leg = calc_leg_qty(self._app.equity_with_loan, self._margin)
-                if new_leg != self._leg:
-                    logger.info("Qty update: leg %d->%d (ELV=%.2f margin=%.2f)",
-                                self._leg, new_leg, self._app.equity_with_loan, self._margin)
-                self._leg = new_leg
-                self._total = self._leg * 2
             await self._place_yz()
 
     async def on_59th_second(self):
         await self.exit_all("59s timer")
+        self._recalc_qty()  # size next candle's orders (spec: at 59th second)
+
+    def _recalc_qty(self):
+        price = (self.last_bid + self.last_ask) / 2 if self.last_bid > 0 and self.last_ask > 0 else self._open
+        if self._app.equity_with_loan > 0 and price > 10:
+            self._margin = max(round(price * 1.6, 2), 950.0)
+            new_leg = calc_leg_qty(self._app.equity_with_loan, self._margin)
+            if new_leg != self._leg:
+                logger.info("Qty recalc @59s: leg %d->%d (ELV=%.2f margin=%.2f)",
+                            self._leg, new_leg, self._app.equity_with_loan, self._margin)
+            self._leg = new_leg
+            self._total = self._leg * 2
 
     async def on_tick(self, price: float, sim_hits: int):
         if self._halted:
             return
-        if self._rev_side == Side.SHORT:
-            await self._manage_rev_short(price)
-        elif self._rev_side == Side.LONG:
-            await self._manage_rev_long(price)
+        if self._rev_side != Side.FLAT:
+            pass  # post-rev SL is a live STP @ Open±0.01 — no tick mgmt needed
         elif self._pos == Side.LONG:
             await self._manage_long(price)
         elif self._pos == Side.SHORT:
             await self._manage_short(price)
         elif (self._pos == Side.FLAT and self._rev_side == Side.FLAT and
-              sim_hits >= 2 and self._entries < 4 and self._y is None):
-            await self._place_yz()
+              not self._pending and sim_hits >= 2 and self._entries < 4):
+            await self._place_yz()  # Y2/Z2: re-entry only when sim SL fired 2x
 
     # ── Fill routing ──────────────────────────────────────────────────────
 
@@ -105,28 +111,37 @@ class OrderManager:
     def on_reverse_rejected(self, order_id: int):
         pass
 
+    def _register_sl(self) -> bool:
+        """Count a stop-loss trigger; return True if 2+ within the same second."""
+        sec = int(time.time())
+        self._sl_count = self._sl_count + 1 if sec == self._sl_sec else 1
+        self._sl_sec = sec
+        return self._sl_count >= 2
+
     # ── Entry fills ───────────────────────────────────────────────────────
 
     async def _on_y_filled(self, fill_price: float):
-        logger.info("Y LONG filled @ %.2f", fill_price)
         self._cancel_group(self._z)
         self._pos = Side.LONG
         self._pos_qty = self._total
-        # STP3 is armed by _manage_long when SPY reaches Open-0.01 (at Bid-0.03)
+        self._pending = False
+        self._entries += 1
+        logger.info("Y LONG filled @ %.2f (entry#%d)", fill_price, self._entries)
+        # STP3 armed by _manage_long when SPY <= Open-0.01 (SELL STP @ Bid-0.03)
 
     async def _on_z_filled(self, fill_price: float):
-        logger.info("Z SHORT filled @ %.2f", fill_price)
         self._cancel_group(self._y)
         self._pos = Side.SHORT
         self._pos_qty = self._total
-        # STP3 is armed by _manage_short when SPY reaches Open+0.01 (at Ask+0.03)
+        self._pending = False
+        self._entries += 1
+        logger.info("Z SHORT filled @ %.2f (entry#%d)", fill_price, self._entries)
+        # STP3 armed by _manage_short when SPY >= Open+0.01 (BUY STP @ Ask+0.03)
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
 
     async def _on_stp3_filled(self, fill_price: float):
-        sec = int(time.time())
-        self._sl_count = self._sl_count + 1 if sec == self._sl_sec else 1
-        self._sl_sec = sec
+        halt_1s = self._register_sl()
 
         was_long = self._pos == Side.LONG
         is_reverse = self._s3_reverse
@@ -137,11 +152,11 @@ class OrderManager:
         self._s3_reverse = False
         logger.info("STP3 filled @ %.2f (SL/s: %d, reverse=%s)", fill_price, self._sl_count, is_reverse)
 
-        if self._sl_count >= 2:
+        if halt_1s:
             logger.warning("1-second exit: SL fired 2x — halting candle")
             self._halted = True
             if is_reverse:
-                # Combined order opened a new position — flatten it immediately
+                # Combined order already opened the opposite position — flatten it
                 action = "BUY" if was_long else "SELL"
                 oid = self._app.next_id()
                 o = mkt(action, self._total, 0, transmit=True)
@@ -151,28 +166,36 @@ class OrderManager:
             return
 
         if not is_reverse:
-            # 4th trade or non-reverse: candle halted, no further action
             logger.info("Exit only (no reverse) — candle halted")
             self._halted = True
             return
 
-        # Combined exit+reverse fired: position is now opposite.
-        # Post-rev SL is armed by _manage_rev_* when SPY reaches the Open band.
+        # Reverse fired: position is now opposite. This is a new position-open
+        # (YA / Y2A) and counts toward the 4-entry cap. Post-rev SL is a normal
+        # quantity STP @ Open±0.01 with NO further reverse.
         new_side = Side.SHORT if was_long else Side.LONG
         self._rev_side = new_side
         self._pos_qty = self._total
-        logger.info("Reverse entered: now %s %d", new_side.name, self._total)
+        self._entries += 1
+        logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._total, self._entries)
+
+        if new_side == Side.SHORT:
+            await self._place_post_rev_sl("BUY", _rp(self._open + 0.01))
+        else:
+            await self._place_post_rev_sl("SELL", _rp(self._open - 0.01))
 
     async def _on_post_rev_sl_filled(self, fill_price: float):
-        logger.info("Post-rev SL filled @ %.2f — FLAT", fill_price)
+        halt_1s = self._register_sl()
+        logger.info("Post-rev SL filled @ %.2f — FLAT (SL/s: %d)", fill_price, self._sl_count)
         self._rev_side = Side.FLAT
         self._rev_stp_pid = self._rev_stp_cid = 0
         self._pos_qty = 0
-        await asyncio.sleep(1)  # let IBKR settle position before new orders
-        if self._entries < 4 and not self._halted:
-            await self._place_yz()
+        if halt_1s:
+            logger.warning("1-second exit: SL fired 2x — halting candle")
+            self._halted = True
+        # No auto re-entry: Y2/Z2 fire only via on_tick when sim SL >= 2.
 
-    # ── STP3 position management ──────────────────────────────────────────
+    # ── STP3 position management (primary entries Y / Y2 reverse) ──────────
 
     async def _manage_long(self, price: float):
         favor, arm = _rp(self._open + 0.01), _rp(self._open - 0.01)
@@ -191,26 +214,6 @@ class OrderManager:
         elif price >= arm and not self._s3_pid:
             ask = self.last_ask if self.last_ask > 0 else price
             await self._place_stp3("BUY", _rp(ask + 0.03), reverse=self._entries < 4)
-
-    # ── Post-reverse SL management (normal qty, no auto-reverse) ───────────
-
-    async def _manage_rev_long(self, price: float):
-        favor, arm = _rp(self._open + 0.01), _rp(self._open - 0.01)
-        if price >= favor:
-            if self._rev_stp_pid:
-                self._cancel_post_rev_sl()           # recovered — cancel stop
-        elif price <= arm and not self._rev_stp_pid:
-            bid = self.last_bid if self.last_bid > 0 else price
-            await self._place_post_rev_sl("SELL", _rp(bid - 0.03))
-
-    async def _manage_rev_short(self, price: float):
-        favor, arm = _rp(self._open - 0.01), _rp(self._open + 0.01)
-        if price <= favor:
-            if self._rev_stp_pid:
-                self._cancel_post_rev_sl()           # recovered — cancel stop
-        elif price >= arm and not self._rev_stp_pid:
-            ask = self.last_ask if self.last_ask > 0 else price
-            await self._place_post_rev_sl("BUY", _rp(ask + 0.03))
 
     # ── Order placement ───────────────────────────────────────────────────
 
@@ -233,8 +236,8 @@ class OrderManager:
 
         self._y = OrderGroup(y_pid, y_cid, Side.LONG,  self._leg, entry_price=buy_px)
         self._z = OrderGroup(z_pid, z_cid, Side.SHORT, self._leg, entry_price=sell_px)
-        self._entries += 1
-        logger.info("Y/Z OCO: BUY=%.2f SELL=%.2f entry#%d", buy_px, sell_px, self._entries)
+        self._pending = True
+        logger.info("Y/Z OCO: BUY=%.2f SELL=%.2f (entries so far=%d)", buy_px, sell_px, self._entries)
 
     async def _place_stp3(self, action: str, stop_px: float, reverse: bool = False):
         pid, cid = self._app.next_id(), self._app.next_id()
@@ -265,12 +268,6 @@ class OrderManager:
         self._rev_stp_cid = cid
         logger.info("Post-rev SL: %s @ %.2f qty=1+%d", action, stop_px, self._total - 1)
 
-    def _cancel_post_rev_sl(self):
-        for oid in (self._rev_stp_pid, self._rev_stp_cid):
-            if oid:
-                self._app.cancelOrder(oid)
-        self._rev_stp_pid = self._rev_stp_cid = 0
-
     # ── Global exit ───────────────────────────────────────────────────────
 
     async def exit_all(self, reason: str = ""):
@@ -299,6 +296,7 @@ class OrderManager:
             logger.info("Flatten rev: %s %d", action, self._pos_qty)
 
         self._y = self._z = None
+        self._pending = False
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
         self._s3_reverse = False
