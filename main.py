@@ -84,12 +84,12 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2
                 if is_new:
                     sim_sl_1.new_candle(candle.open, candle.minute_ts)
                     fired_59s = False
-            sim_hits = sim_sl_1.on_tick(price)
+            sim_hits = sim_sl_1.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
         else:
             if is_new:
                 sim_sl_2.new_candle(candle.open, candle.minute_ts)
                 fired_59s = False
-            sim_hits = sim_sl_2.on_tick(price)
+            sim_hits = sim_sl_2.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
 
         if is_new:
             asyncio.create_task(order_mgr.on_candle_open(candle.open))

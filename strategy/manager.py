@@ -68,8 +68,10 @@ class OrderManager:
     async def on_tick(self, price: float, sim_hits: int):
         if self._halted:
             return
-        if self._rev_side != Side.FLAT:
-            pass  # post-rev SL is a live order — no tick-based check needed
+        if self._rev_side == Side.SHORT:
+            await self._manage_rev_short(price)
+        elif self._rev_side == Side.LONG:
+            await self._manage_rev_long(price)
         elif self._pos == Side.LONG:
             await self._manage_long(price)
         elif self._pos == Side.SHORT:
@@ -110,16 +112,14 @@ class OrderManager:
         self._cancel_group(self._z)
         self._pos = Side.LONG
         self._pos_qty = self._total
-        reverse = self._entries < 4
-        await self._place_stp3("SELL", _rp(self._open - 0.01), reverse=reverse)
+        # STP3 is armed by _manage_long when SPY reaches Open-0.01 (at Bid-0.03)
 
     async def _on_z_filled(self, fill_price: float):
         logger.info("Z SHORT filled @ %.2f", fill_price)
         self._cancel_group(self._y)
         self._pos = Side.SHORT
         self._pos_qty = self._total
-        reverse = self._entries < 4
-        await self._place_stp3("BUY", _rp(self._open + 0.01), reverse=reverse)
+        # STP3 is armed by _manage_short when SPY reaches Open+0.01 (at Ask+0.03)
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
 
@@ -156,19 +156,12 @@ class OrderManager:
             self._halted = True
             return
 
-        # Combined exit+reverse fired: position is now opposite
+        # Combined exit+reverse fired: position is now opposite.
+        # Post-rev SL is armed by _manage_rev_* when SPY reaches the Open band.
         new_side = Side.SHORT if was_long else Side.LONG
         self._rev_side = new_side
         self._pos_qty = self._total
         logger.info("Reverse entered: now %s %d", new_side.name, self._total)
-
-        if new_side == Side.SHORT:
-            stop_px = _rp(self._open + 0.01)
-            sl_action = "BUY"
-        else:
-            stop_px = _rp(self._open - 0.01)
-            sl_action = "SELL"
-        await self._place_post_rev_sl(sl_action, stop_px)
 
     async def _on_post_rev_sl_filled(self, fill_price: float):
         logger.info("Post-rev SL filled @ %.2f — FLAT", fill_price)
@@ -182,26 +175,42 @@ class OrderManager:
     # ── STP3 position management ──────────────────────────────────────────
 
     async def _manage_long(self, price: float):
-        favor, stop = _rp(self._open + 0.01), _rp(self._open - 0.01)
-        if price >= favor and self._s3_pid:
-            self._cancel_stp3()
-        elif price <= stop and self._s3_pid:
-            new = _rp(price - 0.01)
-            if abs(new - self._s3_px) >= 0.05:
-                await self._replace_stp3("SELL", new)
-        elif price <= stop and not self._s3_pid:
-            await self._place_stp3("SELL", stop, reverse=self._entries < 4)
+        favor, arm = _rp(self._open + 0.01), _rp(self._open - 0.01)
+        if price >= favor:
+            if self._s3_pid:
+                self._cancel_stp3()                  # recovered — cancel stop
+        elif price <= arm and not self._s3_pid:
+            bid = self.last_bid if self.last_bid > 0 else price
+            await self._place_stp3("SELL", _rp(bid - 0.03), reverse=self._entries < 4)
 
     async def _manage_short(self, price: float):
-        favor, stop = _rp(self._open - 0.01), _rp(self._open + 0.01)
-        if price <= favor and self._s3_pid:
-            self._cancel_stp3()
-        elif price >= stop and self._s3_pid:
-            new = _rp(price + 0.01)
-            if abs(new - self._s3_px) >= 0.05:
-                await self._replace_stp3("BUY", new)
-        elif price >= stop and not self._s3_pid:
-            await self._place_stp3("BUY", stop, reverse=self._entries < 4)
+        favor, arm = _rp(self._open - 0.01), _rp(self._open + 0.01)
+        if price <= favor:
+            if self._s3_pid:
+                self._cancel_stp3()                  # recovered — cancel stop
+        elif price >= arm and not self._s3_pid:
+            ask = self.last_ask if self.last_ask > 0 else price
+            await self._place_stp3("BUY", _rp(ask + 0.03), reverse=self._entries < 4)
+
+    # ── Post-reverse SL management (normal qty, no auto-reverse) ───────────
+
+    async def _manage_rev_long(self, price: float):
+        favor, arm = _rp(self._open + 0.01), _rp(self._open - 0.01)
+        if price >= favor:
+            if self._rev_stp_pid:
+                self._cancel_post_rev_sl()           # recovered — cancel stop
+        elif price <= arm and not self._rev_stp_pid:
+            bid = self.last_bid if self.last_bid > 0 else price
+            await self._place_post_rev_sl("SELL", _rp(bid - 0.03))
+
+    async def _manage_rev_short(self, price: float):
+        favor, arm = _rp(self._open - 0.01), _rp(self._open + 0.01)
+        if price <= favor:
+            if self._rev_stp_pid:
+                self._cancel_post_rev_sl()           # recovered — cancel stop
+        elif price >= arm and not self._rev_stp_pid:
+            ask = self.last_ask if self.last_ask > 0 else price
+            await self._place_post_rev_sl("BUY", _rp(ask + 0.03))
 
     # ── Order placement ───────────────────────────────────────────────────
 
@@ -246,12 +255,6 @@ class OrderManager:
         self._s3_px = 0.0
         self._s3_reverse = False
 
-    async def _replace_stp3(self, action: str, new_px: float):
-        reverse = self._s3_reverse
-        self._cancel_stp3()
-        await self._place_stp3(action, new_px, reverse=reverse)
-        logger.debug("STP3 rolled -> %.2f", new_px)
-
     async def _place_post_rev_sl(self, action: str, stop_px: float):
         pid, cid = self._app.next_id(), self._app.next_id()
         p = stp(action, 1, stop_px, transmit=False); p.orderId = pid
@@ -261,6 +264,12 @@ class OrderManager:
         self._rev_stp_pid = pid
         self._rev_stp_cid = cid
         logger.info("Post-rev SL: %s @ %.2f qty=1+%d", action, stop_px, self._total - 1)
+
+    def _cancel_post_rev_sl(self):
+        for oid in (self._rev_stp_pid, self._rev_stp_cid):
+            if oid:
+                self._app.cancelOrder(oid)
+        self._rev_stp_pid = self._rev_stp_cid = 0
 
     # ── Global exit ───────────────────────────────────────────────────────
 
