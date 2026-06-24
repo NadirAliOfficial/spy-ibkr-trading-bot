@@ -123,7 +123,7 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
 
         elif etype == "pnl":
             daily_pnl = event["dailyPnL"]
-            logger.info("PnL update: %.2f", daily_pnl)
+            logger.info("PnL update: %.2f | bot realized: %.2f", daily_pnl, order_mgr._bot_realized)
             reason = risk_mgr.check(daily_pnl)
             if reason:
                 logger.warning("Risk exit: %s", reason)

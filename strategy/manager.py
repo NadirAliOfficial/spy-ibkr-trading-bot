@@ -223,7 +223,10 @@ class OrderManager:
                 self._cancel_stp3()                  # recovered — cancel stop
         elif price <= arm and not self._s3_pid:
             bid = self.last_bid if self.last_bid > 0 else price
-            await self._place_stp3("SELL", _rp(bid - 0.03), reverse=self._entries < 4)
+            stop = _rp(bid - 0.03)
+            logger.info("STP3 arm LONG: SPY=%.2f<=Open-0.01=%.2f  bid=%.2f  stop=bid-0.03=%.2f",
+                        price, arm, bid, stop)
+            await self._place_stp3("SELL", stop, reverse=self._entries < 4)
 
     async def _manage_short(self, price: float):
         favor, arm = _rp(self._open - 0.01), _rp(self._open + 0.01)
@@ -232,7 +235,10 @@ class OrderManager:
                 self._cancel_stp3()                  # recovered — cancel stop
         elif price >= arm and not self._s3_pid:
             ask = self.last_ask if self.last_ask > 0 else price
-            await self._place_stp3("BUY", _rp(ask + 0.03), reverse=self._entries < 4)
+            stop = _rp(ask + 0.03)
+            logger.info("STP3 arm SHORT: SPY=%.2f>=Open+0.01=%.2f  ask=%.2f  stop=ask+0.03=%.2f",
+                        price, arm, ask, stop)
+            await self._place_stp3("BUY", stop, reverse=self._entries < 4)
 
     # ── Order placement ───────────────────────────────────────────────────
 
