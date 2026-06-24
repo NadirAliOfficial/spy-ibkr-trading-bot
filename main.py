@@ -227,14 +227,13 @@ async def run():
     # Margin). Falls back to a price estimate only if the whatIf is unavailable.
     spy_price = app.last_price if app.last_price > 10 else 750.0
     short_margin = await app.fetch_short_margin_per_share(100)
-    if short_margin > 10:
-        sell_margin = round(short_margin, 2)
-        margin_pct = sell_margin / spy_price
-        logger.info("Short SPY margin/share (live whatIf)=%.2f (%.1f%% of price)", sell_margin, margin_pct * 100)
-    else:
-        margin_pct = 1.6
-        sell_margin = max(round(spy_price * margin_pct, 2), 950.0)
-        logger.warning("whatIf margin unavailable — falling back to %.2f (1.6x price)", sell_margin)
+    # Short SPY is enforced at ~140-160% of price on fill. The whatIf can
+    # under-report (stale / netted vs residual position), so NEVER size below
+    # the 1.6x price estimate — take the max to stay safe and avoid rejections.
+    sell_margin = max(round(short_margin, 2), round(spy_price * 1.6, 2), 950.0)
+    margin_pct = sell_margin / spy_price
+    logger.info("Short margin: whatIf=%.2f  price*1.6=%.2f  -> using %.2f (%.0f%% of price)",
+                short_margin, spy_price * 1.6, sell_margin, margin_pct * 100)
 
     leg_qty = calc_leg_qty(elv, sell_margin)
     if leg_qty < 1:
