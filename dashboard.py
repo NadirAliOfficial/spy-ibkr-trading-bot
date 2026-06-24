@@ -541,28 +541,32 @@ def parse_log():
             if m2:
                 state["candle_open"] = m2.group(1)
                 state["entries"] = 0
-        if "Y/Z OCO" in msg:
-            m2 = re.search(r"entry#(\d+)", msg)
-            if m2:
-                state["entries"] = int(m2.group(1))
-        if "Y LONG filled @" in msg:
+                state["position"] = "FLAT"
+                state["entry_price"] = None
+                state["pos_qty"] = None
+        m_entry = re.search(r"entry#(\d+)", msg)   # entry# is on the fill lines
+        if m_entry:
+            state["entries"] = int(m_entry.group(1))
+        if "LONG filled @" in msg:
             state["position"] = "LONG"
-            m2 = re.search(r"@ ([\d.]+)", msg)
+            m2 = re.search(r"filled @ ([\d.]+)", msg)
             if m2:
                 state["entry_price"] = m2.group(1)
-        if "Z SHORT filled @" in msg:
+        elif "SHORT filled @" in msg:
             state["position"] = "SHORT"
-            m2 = re.search(r"@ ([\d.]+)", msg)
+            m2 = re.search(r"filled @ ([\d.]+)", msg)
             if m2:
                 state["entry_price"] = m2.group(1)
-        if "STP3 filled" in msg or "Exit all" in msg or "Reverse flattened" in msg or "Session complete" in msg:
+        elif "Reverse entered: now" in msg:   # STP3 reverse flips the position
+            m2 = re.search(r"now (\w+) (\d+)", msg)
+            if m2:
+                state["position"] = m2.group(1)
+                state["pos_qty"] = m2.group(2)
+        if ("Post-rev SL filled" in msg or "Exit all" in msg or "Exit only" in msg
+                or "halt flatten" in msg or "Session complete" in msg):
             state["position"] = "FLAT"
             state["entry_price"] = None
             state["pos_qty"] = None
-        if "Reverse filled" in msg:
-            m2 = re.search(r"now (\w+)", msg)
-            if m2:
-                state["position"] = m2.group(1)
         if "PnL update:" in msg:
             m2 = re.search(r"PnL update: ([-\d.]+)", msg)
             if m2:
