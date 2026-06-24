@@ -226,14 +226,16 @@ async def run():
     # live from the account via a whatIf SELL while flat (spec: Sell SPY Initial
     # Margin). Falls back to a price estimate only if the whatIf is unavailable.
     spy_price = app.last_price if app.last_price > 10 else 750.0
-    short_margin = await app.fetch_short_margin_per_share(100)
-    # Short SPY is enforced at ~140-160% of price on fill. The whatIf can
-    # under-report (stale / netted vs residual position), so NEVER size below
-    # the 1.6x price estimate — take the max to stay safe and avoid rejections.
-    sell_margin = max(round(short_margin, 2), round(spy_price * 1.6, 2), 950.0)
+    # Probe the REAL short initial margin at a realistic position size — a small
+    # whatIf misses SPY size/concentration rules and under-reports. Then never
+    # size below 1.8x price: depleted accounts get house margin raised above the
+    # Reg-T 150%, so this covers the elevated requirement and avoids rejections.
+    probe_qty = max(100, int(elv * 0.98 / (spy_price * 1.6)))
+    short_margin = await app.fetch_short_margin_per_share(probe_qty)
+    sell_margin = max(round(short_margin, 2), round(spy_price * 1.8, 2), 950.0)
     margin_pct = sell_margin / spy_price
-    logger.info("Short margin: whatIf=%.2f  price*1.6=%.2f  -> using %.2f (%.0f%% of price)",
-                short_margin, spy_price * 1.6, sell_margin, margin_pct * 100)
+    logger.info("Short margin: whatIf@%dsh=%.2f  price*1.8=%.2f  -> using %.2f (%.0f%% of price)",
+                probe_qty, short_margin, spy_price * 1.8, sell_margin, margin_pct * 100)
 
     leg_qty = calc_leg_qty(elv, sell_margin)
     if leg_qty < 1:
