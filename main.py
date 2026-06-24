@@ -222,11 +222,19 @@ async def run():
         logger.error("ELV=0 — aborting")
         return
 
-    # Paper charges Y and Z margin simultaneously regardless of OCA.
-    # Observed: ~143% of SPY price per bracket slot. Use 150% for buffer.
+    # Quantity sizing uses the REAL per-share short SPY initial margin, read
+    # live from the account via a whatIf SELL while flat (spec: Sell SPY Initial
+    # Margin). Falls back to a price estimate only if the whatIf is unavailable.
     spy_price = app.last_price if app.last_price > 10 else 750.0
-    sell_margin = max(round(spy_price * 1.6, 2), 950.0)
-    logger.info("SPY last=%.2f  margin/share (Y+Z effective)=%.2f", spy_price, sell_margin)
+    short_margin = await app.fetch_short_margin_per_share(100)
+    if short_margin > 10:
+        sell_margin = round(short_margin, 2)
+        margin_pct = sell_margin / spy_price
+        logger.info("Short SPY margin/share (live whatIf)=%.2f (%.1f%% of price)", sell_margin, margin_pct * 100)
+    else:
+        margin_pct = 1.6
+        sell_margin = max(round(spy_price * margin_pct, 2), 950.0)
+        logger.warning("whatIf margin unavailable — falling back to %.2f (1.6x price)", sell_margin)
 
     leg_qty = calc_leg_qty(elv, sell_margin)
     if leg_qty < 1:
@@ -243,7 +251,7 @@ async def run():
     candles = CandleBuilder()
     sim_sl_1 = SimStopLoss()  # 9:30am-12:30pm
     sim_sl_2 = SimStopLoss()  # 12:30pm-4pm
-    order_mgr = OrderManager(app, leg_qty, sell_margin)
+    order_mgr = OrderManager(app, leg_qty, sell_margin, margin_pct)
     risk_mgr = RiskManager(elv)
 
     sim_end = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN)

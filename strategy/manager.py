@@ -13,11 +13,12 @@ _rp = lambda p: round(round(p / 0.01) * 0.01, 2)
 
 
 class OrderManager:
-    def __init__(self, app, leg_qty: int, margin_per_share: float = 0.0):
+    def __init__(self, app, leg_qty: int, margin_per_share: float = 0.0, margin_pct: float = 1.6):
         self._app = app
         self._leg = leg_qty
         self._total = leg_qty * 2
         self._margin = margin_per_share
+        self._margin_pct = margin_pct   # short SPY margin as fraction of price
 
         self._open: float = 0.0
         self._entries: int = 0          # position-opens this candle (cap 4)
@@ -63,9 +64,10 @@ class OrderManager:
         self._recalc_qty()  # size next candle's orders (spec: at 59th second)
 
     def _recalc_qty(self):
+        # Short SPY margin scales with price; use the live ratio from session start.
         price = (self.last_bid + self.last_ask) / 2 if self.last_bid > 0 and self.last_ask > 0 else self._open
         if self._app.equity_with_loan > 0 and price > 10:
-            self._margin = max(round(price * 1.6, 2), 950.0)
+            self._margin = max(round(price * self._margin_pct, 2), 950.0)
             new_leg = calc_leg_qty(self._app.equity_with_loan, self._margin)
             if new_leg != self._leg:
                 logger.info("Qty recalc @59s: leg %d->%d (ELV=%.2f margin=%.2f)",

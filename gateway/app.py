@@ -34,6 +34,7 @@ class IBApp(EWrapper, EClient):
 
         self._account_futures: dict[int, asyncio.Future] = {}
         self._contract_futures: dict[int, asyncio.Future] = {}
+        self._whatif_futures: dict[int, asyncio.Future] = {}
         self._positions_future: asyncio.Future | None = None
         self._positions: list[dict] = []
 
@@ -178,6 +179,36 @@ class IBApp(EWrapper, EClient):
             "type": "order_status", "orderId": orderId, "status": status,
             "filled": filled, "remaining": remaining, "avgFillPrice": avgFillPrice,
         })
+
+    def openOrder(self, orderId: int, contract, order, orderState):
+        fut = self._whatif_futures.pop(orderId, None)
+        if fut and not fut.done():
+            try:
+                init_margin = float(orderState.initMarginChange)
+            except (ValueError, TypeError):
+                init_margin = 0.0
+            self._loop.call_soon_threadsafe(fut.set_result, init_margin)
+
+    async def fetch_short_margin_per_share(self, qty: int = 100) -> float:
+        """Real per-share short SPY initial margin via a whatIf SELL (run while flat)."""
+        from ibapi.order import Order
+        oid = self.next_id()
+        o = Order()
+        o.action = "SELL"
+        o.orderType = "MKT"
+        o.totalQuantity = qty
+        o.whatIf = True
+        o.eTradeOnly = False
+        o.firmQuoteOnly = False
+        fut = self._loop.create_future()
+        self._whatif_futures[oid] = fut
+        self.placeOrder(oid, spy_contract(), o)
+        try:
+            init_margin = await asyncio.wait_for(fut, timeout=10)
+        except asyncio.TimeoutError:
+            self._whatif_futures.pop(oid, None)
+            return 0.0
+        return init_margin / qty if qty else 0.0
 
     def execDetails(self, reqId: int, contract, execution):
         self._enqueue(self.order_queue, {
