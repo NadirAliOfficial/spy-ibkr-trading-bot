@@ -549,11 +549,15 @@ def parse_log():
             state["entries"] = int(m_entry.group(1))
         if "LONG filled @" in msg:
             state["position"] = "LONG"
+            if state["leg_qty"]:
+                state["pos_qty"] = state["leg_qty"] * 2
             m2 = re.search(r"filled @ ([\d.]+)", msg)
             if m2:
                 state["entry_price"] = m2.group(1)
         elif "SHORT filled @" in msg:
             state["position"] = "SHORT"
+            if state["leg_qty"]:
+                state["pos_qty"] = state["leg_qty"] * 2
             m2 = re.search(r"filled @ ([\d.]+)", msg)
             if m2:
                 state["entry_price"] = m2.group(1)
