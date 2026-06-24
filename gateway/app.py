@@ -37,6 +37,9 @@ class IBApp(EWrapper, EClient):
         self._whatif_futures: dict[int, asyncio.Future] = {}
         self._positions_future: asyncio.Future | None = None
         self._positions: list[dict] = []
+        self._open_orders_future: asyncio.Future | None = None
+        self._open_spy_order_ids: list[int] = []
+        self._collecting_open_orders: bool = False
 
         self.equity_with_loan: float = 0.0
         self.sell_init_margin: float = 0.0
@@ -141,9 +144,24 @@ class IBApp(EWrapper, EClient):
         if self._positions_future and not self._positions_future.done():
             self._loop.call_soon_threadsafe(self._positions_future.set_result, self._positions[:])
 
+    async def cancel_spy_orders(self):
+        """Cancel only open SPY orders — never global, so other projects on the
+        account are untouched."""
+        self._open_spy_order_ids = []
+        self._collecting_open_orders = True
+        self._open_orders_future = self._loop.create_future()
+        self.reqAllOpenOrders()
+        try:
+            await asyncio.wait_for(self._open_orders_future, timeout=10)
+        except asyncio.TimeoutError:
+            pass
+        self._collecting_open_orders = False
+        for oid in self._open_spy_order_ids:
+            self.cancelOrder(oid)
+        logger.info("Cancelled %d open SPY orders", len(self._open_spy_order_ids))
+
     async def clean_slate(self):
-        self.reqGlobalCancel()
-        logger.info("Global cancel sent")
+        await self.cancel_spy_orders()
 
         self._positions = []
         self._positions_future = self._loop.create_future()
@@ -188,6 +206,13 @@ class IBApp(EWrapper, EClient):
             except (ValueError, TypeError):
                 init_margin = 0.0
             self._loop.call_soon_threadsafe(fut.set_result, init_margin)
+            return
+        if self._collecting_open_orders and contract.symbol == "SPY":
+            self._open_spy_order_ids.append(orderId)
+
+    def openOrderEnd(self):
+        if self._open_orders_future and not self._open_orders_future.done():
+            self._loop.call_soon_threadsafe(self._open_orders_future.set_result, True)
 
     async def fetch_short_margin_per_share(self, qty: int = 100) -> float:
         """Real per-share short SPY initial margin via a whatIf SELL (run while flat)."""
