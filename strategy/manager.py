@@ -36,6 +36,7 @@ class OrderManager:
         self._pos: Side = Side.FLAT
         self._pos_qty: int = 0
         self._entry_px: float = 0.0
+        self._bot_realized: float = 0.0   # strategy's own realized P&L (this session)
 
         self._rev_side: Side = Side.FLAT
         self._rev_stp_pid: int = 0
@@ -122,11 +123,14 @@ class OrderManager:
         return self._sl_count >= 2
 
     def _log_exec(self, side: Side, entry: float, exit_px: float, reason: str):
-        """Execution check line: open, fill, exit, labelled Stop Loss or Take Profit."""
-        pnl = (exit_px - entry) if side == Side.LONG else (entry - exit_px)
-        kind = "TAKE PROFIT" if pnl >= 0 else "STOP LOSS"
-        logger.info("EXEC %s | open=%.2f fill=%.2f exit=%.2f | %s (%s)",
-                    side.name, self._open, entry, exit_px, kind, reason)
+        """Execution check line: open, fill, exit, labelled Stop Loss or Take Profit.
+        Accumulates the strategy's own realized P&L (independent of account PnL)."""
+        pnl_sh = (exit_px - entry) if side == Side.LONG else (entry - exit_px)
+        trade_pnl = round(pnl_sh * self._total, 2)
+        self._bot_realized = round(self._bot_realized + trade_pnl, 2)
+        kind = "TAKE PROFIT" if pnl_sh >= 0 else "STOP LOSS"
+        logger.info("EXEC %s | open=%.2f fill=%.2f exit=%.2f | %s (%s) | trade=%.2f botPnL=%.2f",
+                    side.name, self._open, entry, exit_px, kind, reason, trade_pnl, self._bot_realized)
 
     # ── Entry fills ───────────────────────────────────────────────────────
 
