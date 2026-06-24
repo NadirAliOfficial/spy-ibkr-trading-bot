@@ -35,6 +35,7 @@ class OrderManager:
 
         self._pos: Side = Side.FLAT
         self._pos_qty: int = 0
+        self._entry_px: float = 0.0
 
         self._rev_side: Side = Side.FLAT
         self._rev_stp_pid: int = 0
@@ -120,12 +121,20 @@ class OrderManager:
         self._sl_sec = sec
         return self._sl_count >= 2
 
+    def _log_exec(self, side: Side, entry: float, exit_px: float, reason: str):
+        """Execution check line: open, fill, exit, labelled Stop Loss or Take Profit."""
+        pnl = (exit_px - entry) if side == Side.LONG else (entry - exit_px)
+        kind = "TAKE PROFIT" if pnl >= 0 else "STOP LOSS"
+        logger.info("EXEC %s | open=%.2f fill=%.2f exit=%.2f | %s (%s)",
+                    side.name, self._open, entry, exit_px, kind, reason)
+
     # ── Entry fills ───────────────────────────────────────────────────────
 
     async def _on_y_filled(self, fill_price: float):
         self._cancel_group(self._z)
         self._pos = Side.LONG
         self._pos_qty = self._total
+        self._entry_px = fill_price
         self._pending = False
         self._entries += 1
         logger.info("Y LONG filled @ %.2f (entry#%d)", fill_price, self._entries)
@@ -135,6 +144,7 @@ class OrderManager:
         self._cancel_group(self._y)
         self._pos = Side.SHORT
         self._pos_qty = self._total
+        self._entry_px = fill_price
         self._pending = False
         self._entries += 1
         logger.info("Z SHORT filled @ %.2f (entry#%d)", fill_price, self._entries)
@@ -148,6 +158,7 @@ class OrderManager:
         was_long = self._pos == Side.LONG
         is_reverse = self._s3_reverse
 
+        self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
         self._pos, self._pos_qty = Side.FLAT, 0
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
@@ -178,6 +189,7 @@ class OrderManager:
         new_side = Side.SHORT if was_long else Side.LONG
         self._rev_side = new_side
         self._pos_qty = self._total
+        self._entry_px = fill_price
         self._entries += 1
         logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._total, self._entries)
 
@@ -188,6 +200,7 @@ class OrderManager:
 
     async def _on_post_rev_sl_filled(self, fill_price: float):
         halt_1s = self._register_sl()
+        self._log_exec(self._rev_side, self._entry_px, fill_price, "post-rev SL")
         logger.info("Post-rev SL filled @ %.2f — FLAT (SL/s: %d)", fill_price, self._sl_count)
         self._rev_side = Side.FLAT
         self._rev_stp_pid = self._rev_stp_cid = 0
@@ -282,12 +295,14 @@ class OrderManager:
             if oid:
                 self._app.cancelOrder(oid)
 
+        mid = (self.last_bid + self.last_ask) / 2 if self.last_bid > 0 and self.last_ask > 0 else self._open
         if self._pos != Side.FLAT and self._pos_qty > 0:
             action = "SELL" if self._pos == Side.LONG else "BUY"
             oid = self._app.next_id()
             o = mkt(action, self._pos_qty, 0, transmit=True)
             o.orderId = oid
             self._app.placeOrder(oid, CONTRACT, o)
+            self._log_exec(self._pos, self._entry_px, mid, reason or "exit all")
             logger.info("Flatten pos: %s %d", action, self._pos_qty)
         elif self._rev_side != Side.FLAT and self._pos_qty > 0:
             action = "BUY" if self._rev_side == Side.SHORT else "SELL"
@@ -295,6 +310,7 @@ class OrderManager:
             o = mkt(action, self._pos_qty, 0, transmit=True)
             o.orderId = oid
             self._app.placeOrder(oid, CONTRACT, o)
+            self._log_exec(self._rev_side, self._entry_px, mid, reason or "exit all")
             logger.info("Flatten rev: %s %d", action, self._pos_qty)
 
         self._y = self._z = None
