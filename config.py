@@ -14,6 +14,7 @@ HOST = os.getenv("IBKR_HOST", "127.0.0.1")
 PORT = int(os.getenv("IBKR_PORT", "7497"))    # 7497 = paper, 7496 = live
 CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "1"))
 ACCOUNT_ID = os.getenv("IBKR_ACCOUNT", "")    # target account when login has >1
+SIM_ONLY = os.getenv("SIM_ONLY", "") == "1"   # flatten once, then no live orders, sim SL only
 
 SYMBOL = "SPY"
 EXCHANGE = "SMART"

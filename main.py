@@ -227,33 +227,40 @@ async def run():
     await asyncio.sleep(2)
 
     elv, _ = await app.fetch_account_summary()
-    if elv <= 0:
-        logger.error("ELV=0 — aborting")
-        return
 
-    # Quantity = (Equity - 2%) / Sell SPY Initial Margin, using the REAL per-share
-    # short margin from a whatIf SELL. Shorts are checked against the PREVIOUS-DAY
-    # equity (Reg-T), which can be lower than today's, so size against the lower.
-    spy_price = app.last_price if app.last_price > 10 else 750.0
-    sizing_elv = min(elv, app.prev_day_elv) if app.prev_day_elv > 0 else elv
-    probe_qty = max(100, int(sizing_elv * 0.98 / (spy_price * 0.5)))
-    short_margin = await app.fetch_short_margin_per_share(probe_qty)
-    if short_margin >= 50:
-        sell_margin = round(short_margin, 2)
+    if config.SIM_ONLY:
+        # clean_slate above flattened SPY; from here, no live orders — sim SL only.
+        logger.info("SIM-ONLY mode: live orders disabled, simulated stop loss only")
+        leg_qty, sell_margin, margin_pct = 1, 1000.0, 1.6
+        spy_price = app.last_price if app.last_price > 10 else 750.0
+        sizing_elv = elv
     else:
-        sell_margin = max(round(spy_price * 1.6, 2), 950.0)
-        logger.warning("whatIf margin unavailable (%.2f) — fallback %.2f", short_margin, sell_margin)
-    margin_pct = sell_margin / spy_price
-    logger.info("Short margin (whatIf)=%.2f (%.0f%%)  ELV=%.2f prevDay=%.2f sizingELV=%.2f",
-                sell_margin, margin_pct * 100, elv, app.prev_day_elv, sizing_elv)
+        if elv <= 0:
+            logger.error("ELV=0 — aborting")
+            return
+        # Quantity = (Equity - 2%) / Sell SPY Initial Margin, using the REAL per-share
+        # short margin from a whatIf SELL. Shorts are checked against the PREVIOUS-DAY
+        # equity (Reg-T), which can be lower than today's, so size against the lower.
+        spy_price = app.last_price if app.last_price > 10 else 750.0
+        sizing_elv = min(elv, app.prev_day_elv) if app.prev_day_elv > 0 else elv
+        probe_qty = max(100, int(sizing_elv * 0.98 / (spy_price * 0.5)))
+        short_margin = await app.fetch_short_margin_per_share(probe_qty)
+        if short_margin >= 50:
+            sell_margin = round(short_margin, 2)
+        else:
+            sell_margin = max(round(spy_price * 1.6, 2), 950.0)
+            logger.warning("whatIf margin unavailable (%.2f) — fallback %.2f", short_margin, sell_margin)
+        margin_pct = sell_margin / spy_price
+        logger.info("Short margin (whatIf)=%.2f (%.0f%%)  ELV=%.2f prevDay=%.2f sizingELV=%.2f",
+                    sell_margin, margin_pct * 100, elv, app.prev_day_elv, sizing_elv)
 
-    leg_qty = calc_leg_qty(sizing_elv, sell_margin)
-    if leg_qty < 1:
-        logger.error("leg_qty < 1 (ELV=%.2f margin=%.2f) — aborting", sizing_elv, sell_margin)
-        return
+        leg_qty = calc_leg_qty(sizing_elv, sell_margin)
+        if leg_qty < 1:
+            logger.error("leg_qty < 1 (ELV=%.2f margin=%.2f) — aborting", sizing_elv, sell_margin)
+            return
 
-    logger.info("sizingELV=%.2f  margin/share=%.2f  leg=%d  total=%d",
-                sizing_elv, sell_margin, leg_qty, leg_qty * 2)
+        logger.info("sizingELV=%.2f  margin/share=%.2f  leg=%d  total=%d",
+                    sizing_elv, sell_margin, leg_qty, leg_qty * 2)
 
     if app.account:
         app.reqAccountUpdates(True, app.account)
@@ -264,6 +271,8 @@ async def run():
     sim_sl_2 = SimStopLoss()  # 12:30pm-4pm
     order_mgr = OrderManager(app, leg_qty, sell_margin, margin_pct)
     risk_mgr = RiskManager(elv)
+    if config.SIM_ONLY:
+        risk_mgr.done = True   # disables order placement; tick loop still runs the sim SL
 
     sim_end = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN)
     session_end = et_time(config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
