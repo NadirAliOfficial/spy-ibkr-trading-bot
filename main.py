@@ -34,7 +34,7 @@ def mark_day_done():
 
 
 def already_done_today() -> bool:
-    return STATE_FILE.exists() and STATE_FILE.read_text().strip() == _today_str()
+    return STATE_FILE.exists() and STATE_FILE.read_text(encoding="utf-8").strip() == _today_str()
 
 
 async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2: SimStopLoss,
