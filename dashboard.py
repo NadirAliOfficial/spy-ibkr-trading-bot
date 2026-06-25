@@ -326,9 +326,9 @@ header {
     <div class="card-sub">Shares per leg</div>
   </div>
   <div class="card">
-    <div class="card-label">Daily PnL</div>
+    <div class="card-label">Strategy PnL</div>
     <div class="card-value flat" id="pnl-val">--</div>
-    <div class="card-sub" id="pnl-sub">account P&L today</div>
+    <div class="card-sub" id="pnl-sub">realized by bot</div>
   </div>
 </div>
 
@@ -417,15 +417,15 @@ async function refresh(){
 
     const pnlEl=document.getElementById('pnl-val');
     const pnlSub=document.getElementById('pnl-sub');
-    const pv=(d.daily_pnl!==null&&d.daily_pnl!==undefined)?d.daily_pnl:null;
-    if(pv!==null){
-      const pct=(d.elv&&d.elv>0)?(pv/d.elv)*100:null;
-      pnlEl.textContent=(pv>=0?'+':'')+'$'+Math.abs(pv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-      pnlEl.className='card-value '+(pv>0?'long':pv<0?'short':'flat');
-      pnlSub.textContent=(pct!==null?((pct>=0?'+':'')+pct.toFixed(2)+'% · '):'')+'account P&L today';
+    const bp=(d.bot_pnl!==null&&d.bot_pnl!==undefined)?d.bot_pnl:null;
+    if(bp!==null){
+      const pct=(d.elv&&d.elv>0)?(bp/d.elv)*100:null;
+      pnlEl.textContent=(bp>=0?'+':'')+'$'+Math.abs(bp).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      pnlEl.className='card-value '+(bp>0?'long':bp<0?'short':'flat');
+      pnlSub.textContent=(pct!==null?((pct>=0?'+':'')+pct.toFixed(2)+'% · '):'')+'realized by bot';
     } else {
       pnlEl.textContent='--'; pnlEl.className='card-value flat';
-      pnlSub.textContent='account P&L today';
+      pnlSub.textContent='realized by bot';
     }
 
     const pos=d.position||'FLAT';
@@ -528,9 +528,10 @@ def parse_log():
         msg = e["msg"]
         if "Account:" in msg:
             state["account"] = msg.split("Account:")[-1].strip()
-        m_elv = re.search(r"\bELV=([\d.]+)", msg)  # \b avoids matching sizingELV=
-        if m_elv:
-            state["elv"] = float(m_elv.group(1))
+        if "ELV=" in msg:
+            m2 = re.search(r"ELV=([\d.]+)", msg)
+            if m2:
+                state["elv"] = float(m2.group(1))
         if re.search(r"\bleg=(\d+)", msg):
             m2 = re.search(r"\bleg=(\d+)", msg)
             if m2:
