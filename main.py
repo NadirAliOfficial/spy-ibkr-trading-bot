@@ -195,6 +195,11 @@ async def run():
     logger.info("Connecting to IBKR...")
     await asyncio.wait_for(app.connected.wait(), timeout=30)
 
+    from strategy.orders import set_account
+    await asyncio.sleep(1)  # let managedAccounts arrive
+    set_account(app.account)
+    logger.info("Orders target account: %s", app.account)
+
     await wait_until(config.PRE_CHECK_HOUR, config.PRE_CHECK_MIN, "8:25am pre-check")
 
     trading_hours = await app.fetch_trading_hours()

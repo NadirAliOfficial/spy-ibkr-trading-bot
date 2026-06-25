@@ -8,6 +8,8 @@ from ibapi.common import TickerId
 from ibapi.contract import Contract
 from ibapi.wrapper import EWrapper
 
+import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,8 +64,12 @@ class IBApp(EWrapper, EClient):
     # --- Connection ---
 
     def managedAccounts(self, accountsList: str):
-        self.account = accountsList.split(",")[0].strip()
-        logger.info("Account: %s", self.account)
+        accts = [a.strip() for a in accountsList.split(",") if a.strip()]
+        if config.ACCOUNT_ID and config.ACCOUNT_ID in accts:
+            self.account = config.ACCOUNT_ID
+        else:
+            self.account = accts[0] if accts else ""
+        logger.info("Account: %s  (available: %s)", self.account, ",".join(accts))
 
     def nextValidId(self, orderId: int):
         self._next_order_id = orderId
@@ -91,12 +97,16 @@ class IBApp(EWrapper, EClient):
     # --- Account summary ---
 
     def accountSummary(self, reqId: int, account: str, tag: str, value: str, currency: str):
+        if self.account and account != self.account:
+            return
         if tag == "EquityWithLoanValue":
             self.equity_with_loan = float(value)
         elif tag == "SellInitMarginReq" and currency == "USD":
             self.sell_init_margin = float(value)
 
     def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):
+        if self.account and accountName != self.account:
+            return
         if key == "EquityWithLoanValue":
             try:
                 self.equity_with_loan = float(val)
@@ -183,6 +193,8 @@ class IBApp(EWrapper, EClient):
             o.eTradeOnly = False
             o.firmQuoteOnly = False
             o.transmit = True
+            if self.account:
+                o.account = self.account
             self.placeOrder(oid, spy_contract(), o)
             logger.info("Clean slate: %s %d SPY @ MKT", action, qty)
 
@@ -225,6 +237,8 @@ class IBApp(EWrapper, EClient):
         o.whatIf = True
         o.eTradeOnly = False
         o.firmQuoteOnly = False
+        if self.account:
+            o.account = self.account
         fut = self._loop.create_future()
         self._whatif_futures[oid] = fut
         self.placeOrder(oid, spy_contract(), o)

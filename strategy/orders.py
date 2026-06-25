@@ -21,6 +21,15 @@ class OrderGroup:
     cancelled: bool = False
 
 
+_ACCOUNT = ""
+
+
+def set_account(account: str):
+    """Target account for all orders — required when the login has >1 account."""
+    global _ACCOUNT
+    _ACCOUNT = account
+
+
 def _base(action: str, qty: int, transmit: bool) -> Order:
     o = Order()
     o.action = action
@@ -29,6 +38,8 @@ def _base(action: str, qty: int, transmit: bool) -> Order:
     o.tif = "DAY"
     o.eTradeOnly = False
     o.firmQuoteOnly = False
+    if _ACCOUNT:
+        o.account = _ACCOUNT
     return o
 
 
