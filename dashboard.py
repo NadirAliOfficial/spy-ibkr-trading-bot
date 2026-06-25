@@ -400,7 +400,7 @@ async function refresh(){
   try{
     const d=await fetch('/api/state').then(r=>r.json());
 
-    if(d.account) document.getElementById('acc').textContent=d.account+' · Paper';
+    if(d.account) document.getElementById('acc').textContent=d.account+' · '+(d.account.startsWith('DU')?'Paper':'Live');
 
     // status chip
     const chip=document.getElementById('chip');
