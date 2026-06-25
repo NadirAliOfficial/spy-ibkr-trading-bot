@@ -67,13 +67,16 @@ class OrderManager:
 
     def _recalc_qty(self):
         # Short SPY margin scales with price; use the live ratio from session start.
+        # Size against the lower of live and previous-day equity (Reg-T shorts).
         price = (self.last_bid + self.last_ask) / 2 if self.last_bid > 0 and self.last_ask > 0 else self._open
-        if self._app.equity_with_loan > 0 and price > 10:
-            self._margin = max(round(price * self._margin_pct, 2), 950.0)
-            new_leg = calc_leg_qty(self._app.equity_with_loan, self._margin)
+        elv = self._app.equity_with_loan
+        sizing_elv = min(elv, self._app.prev_day_elv) if self._app.prev_day_elv > 0 else elv
+        if sizing_elv > 0 and price > 10:
+            self._margin = round(price * self._margin_pct, 2)
+            new_leg = calc_leg_qty(sizing_elv, self._margin)
             if new_leg != self._leg:
-                logger.info("Qty recalc @59s: leg %d->%d (ELV=%.2f margin=%.2f)",
-                            self._leg, new_leg, self._app.equity_with_loan, self._margin)
+                logger.info("Qty recalc @59s: leg %d->%d (sizingELV=%.2f margin=%.2f)",
+                            self._leg, new_leg, sizing_elv, self._margin)
             self._leg = new_leg
             self._total = self._leg * 2
 

@@ -44,6 +44,7 @@ class IBApp(EWrapper, EClient):
         self._collecting_open_orders: bool = False
 
         self.equity_with_loan: float = 0.0
+        self.prev_day_elv: float = 0.0
         self.sell_init_margin: float = 0.0
         self.last_price: float = 0.0
         self._next_order_id: int = 1
@@ -101,17 +102,21 @@ class IBApp(EWrapper, EClient):
             return
         if tag == "EquityWithLoanValue":
             self.equity_with_loan = float(value)
+        elif tag == "PreviousDayEquityWithLoanValue":
+            self.prev_day_elv = float(value)
         elif tag == "SellInitMarginReq" and currency == "USD":
             self.sell_init_margin = float(value)
 
     def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):
         if self.account and accountName != self.account:
             return
-        if key == "EquityWithLoanValue":
-            try:
+        try:
+            if key == "EquityWithLoanValue":
                 self.equity_with_loan = float(val)
-            except ValueError:
-                pass
+            elif key == "PreviousDayEquityWithLoanValue":
+                self.prev_day_elv = float(val)
+        except ValueError:
+            pass
 
     def accountSummaryEnd(self, reqId: int):
         fut = self._account_futures.pop(reqId, None)
@@ -122,7 +127,7 @@ class IBApp(EWrapper, EClient):
         req_id = self.next_id()
         fut = self._loop.create_future()
         self._account_futures[req_id] = fut
-        self.reqAccountSummary(req_id, "All", "EquityWithLoanValue,SellInitMarginReq")
+        self.reqAccountSummary(req_id, "All", "EquityWithLoanValue,PreviousDayEquityWithLoanValue,SellInitMarginReq")
         await asyncio.wait_for(fut, timeout=15)
         return self.equity_with_loan, self.sell_init_margin
 
