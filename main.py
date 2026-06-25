@@ -45,7 +45,9 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2
     fired_59s = False
     session_start_ts = et_time(config.OPEN_HOUR, config.OPEN_MIN).timestamp()
 
-    while not risk_mgr.done:
+    # Run until session close — the simulated stop loss must keep tracking for the
+    # post-trade report even after live trading stops (noon/TP/hard-SL exit).
+    while now_et() < session_end:
         try:
             event = await asyncio.wait_for(app.tick_queue.get(), timeout=1.0)
         except asyncio.TimeoutError:
@@ -91,14 +93,16 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2
                 fired_59s = False
             sim_hits = sim_sl_2.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
 
-        if is_new:
-            asyncio.create_task(order_mgr.on_candle_open(candle.open))
+        # Order management only while trading is active; sim SL above always runs.
+        if not risk_mgr.done:
+            if is_new:
+                asyncio.create_task(order_mgr.on_candle_open(candle.open))
 
-        if candles.seconds_into_candle(ts) >= 59.0 and not fired_59s:
-            fired_59s = True
-            asyncio.create_task(order_mgr.on_59th_second())
+            if candles.seconds_into_candle(ts) >= 59.0 and not fired_59s:
+                fired_59s = True
+                asyncio.create_task(order_mgr.on_59th_second())
 
-        asyncio.create_task(order_mgr.on_tick(price, sim_hits))
+            asyncio.create_task(order_mgr.on_tick(price, sim_hits))
 
     logger.info("Tick loop done")
 
