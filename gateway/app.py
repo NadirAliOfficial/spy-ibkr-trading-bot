@@ -231,12 +231,11 @@ class IBApp(EWrapper, EClient):
         if self._open_orders_future and not self._open_orders_future.done():
             self._loop.call_soon_threadsafe(self._open_orders_future.set_result, True)
 
-    async def fetch_short_margin_per_share(self, qty: int = 100) -> float:
-        """Real per-share short SPY initial margin via a whatIf SELL (run while flat)."""
+    async def _fetch_margin_per_share(self, action: str, qty: int) -> float:
         from ibapi.order import Order
         oid = self.next_id()
         o = Order()
-        o.action = "SELL"
+        o.action = action
         o.orderType = "MKT"
         o.totalQuantity = qty
         o.whatIf = True
@@ -253,6 +252,12 @@ class IBApp(EWrapper, EClient):
             self._whatif_futures.pop(oid, None)
             return 0.0
         return init_margin / qty if qty else 0.0
+
+    async def fetch_short_margin_per_share(self, qty: int = 100) -> float:
+        return await self._fetch_margin_per_share("SELL", qty)
+
+    async def fetch_long_margin_per_share(self, qty: int = 100) -> float:
+        return await self._fetch_margin_per_share("BUY", qty)
 
     def execDetails(self, reqId: int, contract, execution):
         self._enqueue(self.order_queue, {

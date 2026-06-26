@@ -14,11 +14,12 @@ def et_time(hour: int, minute: int, second: int = 0) -> datetime.datetime:
     return now_et().replace(hour=hour, minute=minute, second=second, microsecond=0)
 
 
-def calc_leg_qty(equity: float, sell_init_margin: float) -> int:
-    if sell_init_margin <= 0:
+def calc_leg_qty(equity: float, margin_per_pair: float) -> int:
+    # margin_per_pair = IBKR initial margin for one share in Y (long) + one share in Z (short)
+    # size so Y+Z combined fits within 90% of equity, leaving a cushion
+    if margin_per_pair <= 0:
         return 0
-    total = math.floor(equity * 0.98 / sell_init_margin)
-    return max(1, total // 2)
+    return max(1, math.floor(equity * 0.90 / margin_per_pair))
 
 
 def parse_trading_hours(raw: str) -> list[tuple[datetime.datetime, datetime.datetime]]:

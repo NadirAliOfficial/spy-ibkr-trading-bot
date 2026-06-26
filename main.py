@@ -244,29 +244,37 @@ async def run():
         if elv <= 0:
             logger.error("ELV=0 — aborting")
             return
-        # Quantity = (Equity - 2%) / Sell SPY Initial Margin, using the REAL per-share
-        # short margin from a whatIf SELL. Shorts are checked against the PREVIOUS-DAY
-        # equity (Reg-T), which can be lower than today's, so size against the lower.
+        # IBKR holds initial margin for BOTH legs of the Y+Z OCO simultaneously.
+        # Sizing against short margin alone causes immediate 201 rejections.
+        # Fetch both long and short via whatIf and size against their sum.
         spy_price = app.last_price if app.last_price > 10 else 750.0
         sizing_elv = min(elv, app.prev_day_elv) if app.prev_day_elv > 0 else elv
         probe_qty = max(100, int(sizing_elv * 0.98 / (spy_price * 0.5)))
-        short_margin = await app.fetch_short_margin_per_share(probe_qty)
-        if short_margin >= 50:
+        short_margin, long_margin = await asyncio.gather(
+            app.fetch_short_margin_per_share(probe_qty),
+            app.fetch_long_margin_per_share(probe_qty),
+        )
+        if short_margin >= 50 and long_margin >= 50:
             sell_margin = round(short_margin, 2)
+            combined_margin = round(short_margin + long_margin, 2)
         else:
             sell_margin = max(round(spy_price * 1.6, 2), 950.0)
-            logger.warning("whatIf margin unavailable (%.2f) — fallback %.2f", short_margin, sell_margin)
+            combined_margin = max(round(spy_price * 2.1, 2), 1250.0)
+            logger.warning("whatIf unavailable (short=%.2f long=%.2f) — fallback combined=%.2f",
+                           short_margin, long_margin, combined_margin)
         margin_pct = sell_margin / spy_price
-        logger.info("Short margin (whatIf)=%.2f (%.0f%%)  ELV=%.2f prevDay=%.2f sizingELV=%.2f",
-                    sell_margin, margin_pct * 100, elv, app.prev_day_elv, sizing_elv)
+        logger.info("Margin (whatIf): short=%.2f long=%.2f combined=%.2f (%.0f%%)  "
+                    "ELV=%.2f prevDay=%.2f sizingELV=%.2f",
+                    sell_margin, long_margin, combined_margin, margin_pct * 100,
+                    elv, app.prev_day_elv, sizing_elv)
 
-        leg_qty = calc_leg_qty(sizing_elv, sell_margin)
+        leg_qty = calc_leg_qty(sizing_elv, combined_margin)
         if leg_qty < 1:
-            logger.error("leg_qty < 1 (ELV=%.2f margin=%.2f) — aborting", sizing_elv, sell_margin)
+            logger.error("leg_qty < 1 (ELV=%.2f combined_margin=%.2f) — aborting", sizing_elv, combined_margin)
             return
 
-        logger.info("sizingELV=%.2f  margin/share=%.2f  leg=%d  total=%d",
-                    sizing_elv, sell_margin, leg_qty, leg_qty * 2)
+        logger.info("sizingELV=%.2f  combined_margin/pair=%.2f  leg=%d  total=%d",
+                    sizing_elv, combined_margin, leg_qty, leg_qty * 2)
 
     if app.account:
         app.reqAccountUpdates(True, app.account)
