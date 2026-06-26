@@ -125,6 +125,12 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
             if event["status"] == "PartiallyFilled" and event["remaining"] > 0:
                 await order_mgr.on_partial_fill(event["orderId"])
 
+        elif etype == "error":
+            if event.get("code") == 201:
+                logger.warning("Order rejected (201) — stopping bot immediately per client directive")
+                risk_mgr.done = True
+                await order_mgr.exit_all("order rejected 201")
+
         elif etype == "pnl":
             daily_pnl = event["dailyPnL"]
             logger.info("PnL update: %.2f | bot realized: %.2f", daily_pnl, order_mgr._bot_realized)

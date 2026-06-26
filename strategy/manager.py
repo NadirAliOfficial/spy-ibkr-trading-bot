@@ -42,6 +42,8 @@ class OrderManager:
         self._rev_stp_pid: int = 0
         self._rev_stp_cid: int = 0
 
+        self._exit_orders: dict[int, tuple] = {}  # oid → (side, entry_px, reason)
+
         self._sl_count: int = 0
         self._sl_sec: int = -1
 
@@ -96,6 +98,14 @@ class OrderManager:
     # ── Fill routing ──────────────────────────────────────────────────────
 
     async def on_fill(self, order_id: int, fill_price: float):
+        if order_id in self._exit_orders:
+            side, entry, reason = self._exit_orders.pop(order_id)
+            self._log_exec(side, entry, fill_price, reason)
+            self._pos = Side.FLAT
+            self._rev_side = Side.FLAT
+            self._pos_qty = 0
+            return
+
         if self._y and order_id in (self._y.parent_id, self._y.child_id) and not self._y.filled:
             self._y.filled = True
             self._y.entry_price = fill_price
@@ -249,6 +259,14 @@ class OrderManager:
         if self._entries >= 4 or self._halted:
             return
 
+        # Settle delay on re-entries (not first entry): prior close must clear at IBKR
+        # before the next order arrives, otherwise the margin briefly double-counts and
+        # the order is rejected (code=201). 0.5s is enough for a round-trip to settle.
+        if self._entries > 0:
+            await asyncio.sleep(0.5)
+            if self._halted or self._entries >= 4:
+                return
+
         y_pid, y_cid = self._app.next_id(), self._app.next_id()
         z_pid, z_cid = self._app.next_id(), self._app.next_id()
         buy_px, sell_px = _rp(self._open + 0.01), _rp(self._open - 0.01)
@@ -308,23 +326,22 @@ class OrderManager:
             if oid:
                 self._app.cancelOrder(oid)
 
-        mid = (self.last_bid + self.last_ask) / 2 if self.last_bid > 0 and self.last_ask > 0 else self._open
         if self._pos != Side.FLAT and self._pos_qty > 0:
             action = "SELL" if self._pos == Side.LONG else "BUY"
             oid = self._app.next_id()
             o = mkt(action, self._pos_qty, 0, transmit=True)
             o.orderId = oid
             self._app.placeOrder(oid, CONTRACT, o)
-            self._log_exec(self._pos, self._entry_px, mid, reason or "exit all")
-            logger.info("Flatten pos: %s %d", action, self._pos_qty)
+            self._exit_orders[oid] = (self._pos, self._entry_px, reason or "exit all")
+            logger.info("Flatten pos: %s %d (pending fill for real PnL)", action, self._pos_qty)
         elif self._rev_side != Side.FLAT and self._pos_qty > 0:
             action = "BUY" if self._rev_side == Side.SHORT else "SELL"
             oid = self._app.next_id()
             o = mkt(action, self._pos_qty, 0, transmit=True)
             o.orderId = oid
             self._app.placeOrder(oid, CONTRACT, o)
-            self._log_exec(self._rev_side, self._entry_px, mid, reason or "exit all")
-            logger.info("Flatten rev: %s %d", action, self._pos_qty)
+            self._exit_orders[oid] = (self._rev_side, self._entry_px, reason or "exit all")
+            logger.info("Flatten rev: %s %d (pending fill for real PnL)", action, self._pos_qty)
 
         self._y = self._z = None
         self._pending = False

@@ -326,9 +326,14 @@ header {
     <div class="card-sub">Shares per leg</div>
   </div>
   <div class="card">
+    <div class="card-label">Account PnL</div>
+    <div class="card-value flat" id="daily-pnl-val">--</div>
+    <div class="card-sub">IBKR daily P&amp;L</div>
+  </div>
+  <div class="card">
     <div class="card-label">Strategy PnL</div>
     <div class="card-value flat" id="pnl-val">--</div>
-    <div class="card-sub" id="pnl-sub">realized by bot</div>
+    <div class="card-sub" id="pnl-sub">fills excl. commissions</div>
   </div>
 </div>
 
@@ -415,6 +420,15 @@ async function refresh(){
     document.getElementById('entries-sub').textContent=(d.entries||0)+' / 4 entries';
     document.getElementById('leg-val').textContent=d.leg_qty||'--';
 
+    // Account PnL (IBKR daily)
+    const dpEl=document.getElementById('daily-pnl-val');
+    const dp=(d.daily_pnl!==null&&d.daily_pnl!==undefined)?d.daily_pnl:null;
+    if(dp!==null){
+      dpEl.textContent=(dp>=0?'+':'')+'$'+Math.abs(dp).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+      dpEl.className='card-value '+(dp>0?'long':dp<0?'short':'flat');
+    } else { dpEl.textContent='--'; dpEl.className='card-value flat'; }
+
+    // Strategy PnL (real fills, excludes commissions)
     const pnlEl=document.getElementById('pnl-val');
     const pnlSub=document.getElementById('pnl-sub');
     const bp=(d.bot_pnl!==null&&d.bot_pnl!==undefined)?d.bot_pnl:null;
@@ -422,10 +436,10 @@ async function refresh(){
       const pct=(d.elv&&d.elv>0)?(bp/d.elv)*100:null;
       pnlEl.textContent=(bp>=0?'+':'')+'$'+Math.abs(bp).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
       pnlEl.className='card-value '+(bp>0?'long':bp<0?'short':'flat');
-      pnlSub.textContent=(pct!==null?((pct>=0?'+':'')+pct.toFixed(2)+'% · '):'')+'realized by bot';
+      pnlSub.textContent=(pct!==null?((pct>=0?'+':'')+pct.toFixed(2)+'% · '):'')+'fills excl. commissions';
     } else {
       pnlEl.textContent='--'; pnlEl.className='card-value flat';
-      pnlSub.textContent='realized by bot';
+      pnlSub.textContent='fills excl. commissions';
     }
 
     const pos=d.position||'FLAT';
