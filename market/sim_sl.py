@@ -11,6 +11,7 @@ class CandleRecord:
     minute_ts: float
     open_price: float
     sim_sl_hits: int = 0
+    close_price: float = 0.0  # set at candle close for open-close stat
 
 
 class SimStopLoss:
@@ -40,8 +41,10 @@ class SimStopLoss:
         self._state: int = self.FLAT
         self._stop: float | None = None
 
-    def new_candle(self, open_price: float, minute_ts: float):
+    def new_candle(self, open_price: float, minute_ts: float, prev_close: float = 0.0):
         if self._current is not None:
+            if prev_close > 0:
+                self._current.close_price = prev_close
             self.records.append(self._current)
         self._current = CandleRecord(minute_ts=minute_ts, open_price=open_price)
         self._up = _rp(open_price + 0.01)

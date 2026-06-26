@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 
+import config
 from gateway import spy_contract
 from strategy.orders import Side, OrderGroup, stp, mkt
 from utils import calc_leg_qty
@@ -21,7 +22,7 @@ class OrderManager:
         self._margin_pct = margin_pct   # short SPY margin as fraction of price
 
         self._open: float = 0.0
-        self._entries: int = 0          # position-opens this candle (cap 4)
+        self._entries: int = 0          # position-opens this candle (cap 5)
         self._halted: bool = False
         self._pending: bool = False     # Y/Z placed, awaiting fill
 
@@ -92,7 +93,8 @@ class OrderManager:
         elif self._pos == Side.SHORT:
             await self._manage_short(price)
         elif (self._pos == Side.FLAT and self._rev_side == Side.FLAT and
-              not self._pending and sim_hits >= 2 and self._entries < 4):
+              not self._pending and sim_hits >= 2 and
+              self._entries < config.MAX_ENTRIES_PER_CANDLE):
             await self._place_yz()  # Y2/Z2: re-entry only when sim SL fired 2x
 
     # ── Fill routing ──────────────────────────────────────────────────────
@@ -200,20 +202,29 @@ class OrderManager:
             self._halted = True
             return
 
-        # Reverse fired: position is now opposite. This is a new position-open
-        # (YA / Y2A) and counts toward the 4-entry cap. Post-rev SL is a normal
-        # quantity STP @ Open±0.01 with NO further reverse.
+        # Reverse fired: opens the opposite position (YA, Y2A, or Y2B).
+        # If this is the final allowed entry, use a simple post-rev SL (no further
+        # reverse). Otherwise, continue as a regular position so _manage_long/short
+        # can arm the next STP3 reverse.
         new_side = Side.SHORT if was_long else Side.LONG
-        self._rev_side = new_side
         self._pos_qty = self._total
         self._entry_px = fill_price
         self._entries += 1
         logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._total, self._entries)
 
-        if new_side == Side.SHORT:
-            await self._place_post_rev_sl("BUY", _rp(self._open + 0.01))
+        if self._entries >= config.MAX_ENTRIES_PER_CANDLE:
+            # Last entry (Y2B/Z2B): place simple exit-only SL, no further reverse.
+            self._rev_side = new_side
+            self._pos = Side.FLAT
+            if new_side == Side.SHORT:
+                await self._place_post_rev_sl("BUY", _rp(self._open + 0.01))
+            else:
+                await self._place_post_rev_sl("SELL", _rp(self._open - 0.01))
         else:
-            await self._place_post_rev_sl("SELL", _rp(self._open - 0.01))
+            # Intermediate reverse (YA, Y2A): keep as active position so STP3
+            # monitoring continues and can reverse again.
+            self._pos = new_side
+            self._rev_side = Side.FLAT
 
     async def _on_post_rev_sl_filled(self, fill_price: float):
         halt_1s = self._register_sl()
@@ -239,7 +250,7 @@ class OrderManager:
             stop = _rp(bid - 0.03)
             logger.info("STP3 arm LONG: SPY=%.2f<=Open-0.01=%.2f  bid=%.2f  stop=bid-0.03=%.2f",
                         price, arm, bid, stop)
-            await self._place_stp3("SELL", stop, reverse=self._entries < 4)
+            await self._place_stp3("SELL", stop, reverse=self._entries < config.MAX_ENTRIES_PER_CANDLE)
 
     async def _manage_short(self, price: float):
         favor, arm = _rp(self._open - 0.01), _rp(self._open + 0.01)
@@ -251,30 +262,28 @@ class OrderManager:
             stop = _rp(ask + 0.03)
             logger.info("STP3 arm SHORT: SPY=%.2f>=Open+0.01=%.2f  ask=%.2f  stop=ask+0.03=%.2f",
                         price, arm, ask, stop)
-            await self._place_stp3("BUY", stop, reverse=self._entries < 4)
+            await self._place_stp3("BUY", stop, reverse=self._entries < config.MAX_ENTRIES_PER_CANDLE)
 
     # ── Order placement ───────────────────────────────────────────────────
 
     async def _place_yz(self):
-        if self._entries >= 4 or self._halted:
+        if self._entries >= config.MAX_ENTRIES_PER_CANDLE or self._halted:
             return
 
-        # Settle delay on re-entries (not first entry): prior close must clear at IBKR
-        # before the next order arrives, otherwise the margin briefly double-counts and
-        # the order is rejected (code=201). 0.5s is enough for a round-trip to settle.
         if self._entries > 0:
             await asyncio.sleep(0.5)
-            if self._halted or self._entries >= 4:
+            if self._halted or self._entries >= config.MAX_ENTRIES_PER_CANDLE:
                 return
 
         y_pid, y_cid = self._app.next_id(), self._app.next_id()
         z_pid, z_cid = self._app.next_id(), self._app.next_id()
         buy_px, sell_px = _rp(self._open + 0.01), _rp(self._open - 0.01)
 
-        oca = f"YZ_{y_pid}"
-        yp = stp("BUY",  self._leg, buy_px,  transmit=False);  yp.orderId = y_pid; yp.ocaGroup = oca; yp.ocaType = 1
+        # OCO removed (NADIR6): Y and Z are independent orders.
+        # When one fills, the other is cancelled in code (_on_y_filled / _on_z_filled).
+        yp = stp("BUY",  self._leg, buy_px,  transmit=False);  yp.orderId = y_pid
         yc = mkt("BUY",  self._leg, y_pid,   transmit=True);   yc.orderId = y_cid
-        zp = stp("SELL", self._leg, sell_px, transmit=False);  zp.orderId = z_pid; zp.ocaGroup = oca; zp.ocaType = 1
+        zp = stp("SELL", self._leg, sell_px, transmit=False);  zp.orderId = z_pid
         zc = mkt("SELL", self._leg, z_pid,   transmit=True);   zc.orderId = z_cid
 
         for oid, order in ((y_pid, yp), (y_cid, yc), (z_pid, zp), (z_cid, zc)):
@@ -283,7 +292,7 @@ class OrderManager:
         self._y = OrderGroup(y_pid, y_cid, Side.LONG,  self._leg, entry_price=buy_px)
         self._z = OrderGroup(z_pid, z_cid, Side.SHORT, self._leg, entry_price=sell_px)
         self._pending = True
-        logger.info("Y/Z OCO: BUY=%.2f SELL=%.2f (entries so far=%d)", buy_px, sell_px, self._entries)
+        logger.info("Y/Z placed: BUY=%.2f SELL=%.2f (entries so far=%d)", buy_px, sell_px, self._entries)
 
     async def _place_stp3(self, action: str, stop_px: float, reverse: bool = False):
         pid, cid = self._app.next_id(), self._app.next_id()

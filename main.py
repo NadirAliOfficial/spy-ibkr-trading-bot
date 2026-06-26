@@ -43,6 +43,7 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2
     logger.info("Tick loop started")
     phase = 1  # 1 = 9:30am-12:30pm, 2 = 12:30pm-4pm
     fired_59s = False
+    last_price = 0.0  # track for prev_close when candle rolls
     session_start_ts = et_time(config.OPEN_HOUR, config.OPEN_MIN).timestamp()
 
     # Run until session close — the simulated stop loss must keep tracking for the
@@ -76,6 +77,8 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2
             break
 
         candle, is_new = candles.process_tick(price, ts)
+        prev_close = last_price
+        last_price = price
 
         if phase == 1:
             if now_et() >= sim_end:
@@ -84,12 +87,12 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2
                 logger.info("Sim SL phase 1 closed (9:30am-12:30pm)")
             else:
                 if is_new:
-                    sim_sl_1.new_candle(candle.open, candle.minute_ts)
+                    sim_sl_1.new_candle(candle.open, candle.minute_ts, prev_close)
                     fired_59s = False
             sim_hits = sim_sl_1.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
         else:
             if is_new:
-                sim_sl_2.new_candle(candle.open, candle.minute_ts)
+                sim_sl_2.new_candle(candle.open, candle.minute_ts, prev_close)
                 fired_59s = False
             sim_hits = sim_sl_2.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
 
@@ -244,37 +247,28 @@ async def run():
         if elv <= 0:
             logger.error("ELV=0 — aborting")
             return
-        # IBKR holds initial margin for BOTH legs of the Y+Z OCO simultaneously.
-        # Sizing against short margin alone causes immediate 201 rejections.
-        # Fetch both long and short via whatIf and size against their sum.
+        # OCO removed (NADIR6) — Y and Z are independent orders, IBKR nets BUY+SELL
+        # pending exposure. Size against Sell SPY Initial Margin only (spec formula).
         spy_price = app.last_price if app.last_price > 10 else 750.0
         sizing_elv = min(elv, app.prev_day_elv) if app.prev_day_elv > 0 else elv
         probe_qty = max(100, int(sizing_elv * 0.98 / (spy_price * 0.5)))
-        short_margin, long_margin = await asyncio.gather(
-            app.fetch_short_margin_per_share(probe_qty),
-            app.fetch_long_margin_per_share(probe_qty),
-        )
-        if short_margin >= 50 and long_margin >= 50:
+        short_margin = await app.fetch_short_margin_per_share(probe_qty)
+        if short_margin >= 50:
             sell_margin = round(short_margin, 2)
-            combined_margin = round(short_margin + long_margin, 2)
         else:
             sell_margin = max(round(spy_price * 1.6, 2), 950.0)
-            combined_margin = max(round(spy_price * 2.1, 2), 1250.0)
-            logger.warning("whatIf unavailable (short=%.2f long=%.2f) — fallback combined=%.2f",
-                           short_margin, long_margin, combined_margin)
+            logger.warning("whatIf margin unavailable (%.2f) — fallback %.2f", short_margin, sell_margin)
         margin_pct = sell_margin / spy_price
-        logger.info("Margin (whatIf): short=%.2f long=%.2f combined=%.2f (%.0f%%)  "
-                    "ELV=%.2f prevDay=%.2f sizingELV=%.2f",
-                    sell_margin, long_margin, combined_margin, margin_pct * 100,
-                    elv, app.prev_day_elv, sizing_elv)
+        logger.info("Short margin (whatIf)=%.2f (%.0f%%)  ELV=%.2f prevDay=%.2f sizingELV=%.2f",
+                    sell_margin, margin_pct * 100, elv, app.prev_day_elv, sizing_elv)
 
-        leg_qty = calc_leg_qty(sizing_elv, combined_margin)
+        leg_qty = calc_leg_qty(sizing_elv, sell_margin)
         if leg_qty < 1:
-            logger.error("leg_qty < 1 (ELV=%.2f combined_margin=%.2f) — aborting", sizing_elv, combined_margin)
+            logger.error("leg_qty < 1 (ELV=%.2f margin=%.2f) — aborting", sizing_elv, sell_margin)
             return
 
-        logger.info("sizingELV=%.2f  combined_margin/pair=%.2f  leg=%d  total=%d",
-                    sizing_elv, combined_margin, leg_qty, leg_qty * 2)
+        logger.info("sizingELV=%.2f  margin/share=%.2f  leg=%d  total=%d",
+                    sizing_elv, sell_margin, leg_qty, leg_qty * 2)
 
     if app.account:
         app.reqAccountUpdates(True, app.account)
