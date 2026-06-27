@@ -248,9 +248,9 @@ async def run():
             logger.error("ELV=0 — aborting")
             return
         # OCO removed (NADIR6) — Y and Z are independent orders, IBKR nets BUY+SELL
-        # pending exposure. Size against Sell SPY Initial Margin only (spec formula).
+        # pending exposure. Size against current ELV per client spec (ELV-2%/margin).
         spy_price = app.last_price if app.last_price > 10 else 750.0
-        sizing_elv = min(elv, app.prev_day_elv) if app.prev_day_elv > 0 else elv
+        sizing_elv = elv
         probe_qty = max(100, int(sizing_elv * 0.98 / (spy_price * 0.5)))
         short_margin = await app.fetch_short_margin_per_share(probe_qty)
         if short_margin >= 50:
@@ -259,16 +259,16 @@ async def run():
             sell_margin = max(round(spy_price * 1.6, 2), 950.0)
             logger.warning("whatIf margin unavailable (%.2f) — fallback %.2f", short_margin, sell_margin)
         margin_pct = sell_margin / spy_price
-        logger.info("Short margin (whatIf)=%.2f (%.0f%%)  ELV=%.2f prevDay=%.2f sizingELV=%.2f",
-                    sell_margin, margin_pct * 100, elv, app.prev_day_elv, sizing_elv)
+        logger.info("Short margin (whatIf)=%.2f (%.0f%%)  ELV=%.2f (sizing against current ELV)",
+                    sell_margin, margin_pct * 100, elv)
 
         leg_qty = calc_leg_qty(sizing_elv, sell_margin)
         if leg_qty < 1:
             logger.error("leg_qty < 1 (ELV=%.2f margin=%.2f) — aborting", sizing_elv, sell_margin)
             return
 
-        logger.info("sizingELV=%.2f  margin/share=%.2f  leg=%d  total=%d",
-                    sizing_elv, sell_margin, leg_qty, leg_qty * 2)
+        logger.info("ELV=%.2f  margin/share=%.2f  qty=%d",
+                    sizing_elv, sell_margin, leg_qty)
 
     if app.account:
         app.reqAccountUpdates(True, app.account)
