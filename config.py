@@ -40,7 +40,8 @@ MAX_ENTRIES_PER_CANDLE = 5
 # Session times (ET)
 PRE_CHECK_HOUR, PRE_CHECK_MIN = 8, 25
 OPEN_HOUR, OPEN_MIN = 9, 30
-SIM_SL_END_HOUR, SIM_SL_END_MIN = 12, 30
+_sim_sl_end = os.getenv("SIM_SL_END", "12:30").split(":")
+SIM_SL_END_HOUR, SIM_SL_END_MIN = int(_sim_sl_end[0]), int(_sim_sl_end[1])
 _eod = os.getenv("EOD_EXIT", "15:59").split(":")
 EOD_EXIT_HOUR, EOD_EXIT_MIN = int(_eod[0]), int(_eod[1])
 

@@ -226,7 +226,7 @@ async def run():
         return
     logger.info("Session close: %s ET", sessions[0][1].strftime("%H:%M"))
 
-    app.reqMarketDataType(3)  # delayed for paper; remove for live with subscription
+    app.reqMarketDataType(1 if not config.SIM_ONLY and config.PORT != 7497 else 3)
     mkt_req_id = app.next_id()
     app.reqMktData(mkt_req_id, spy_contract(), "", False, False, [])
 
@@ -283,7 +283,7 @@ async def run():
         risk_mgr.done = True   # disables order placement; tick loop still runs the sim SL
 
     sim_end = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN)
-    session_end = et_time(config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
+    session_end = sim_end  # tick_loop runs until 12:30pm so sim SL keeps tracking; EOD exit task stops trading earlier
 
     await asyncio.gather(
         tick_loop(app, candles, sim_sl_1, sim_sl_2, order_mgr, risk_mgr, sim_end, session_end),

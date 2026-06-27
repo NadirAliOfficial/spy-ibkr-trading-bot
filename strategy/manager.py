@@ -233,7 +233,7 @@ class OrderManager:
         if halt_1s:
             logger.warning("1-second exit: SL fired 2x — halting candle")
             self._halted = True
-        # No auto re-entry: Y2/Z2 fire only via on_tick when sim SL >= 2.
+        # No auto re-entry from here — on_tick handles re-entry when flat.
 
     # ── STP3 position management (primary entries Y / Y2 reverse) ──────────
 
