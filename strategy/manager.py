@@ -89,9 +89,9 @@ class OrderManager:
         elif self._pos == Side.SHORT:
             await self._manage_short(price)
         elif (self._pos == Side.FLAT and self._rev_side == Side.FLAT and
-              not self._pending and sim_hits >= 2 and
+              not self._pending and
               self._entries < config.MAX_ENTRIES_PER_CANDLE):
-            await self._place_yz()  # Y2/Z2: re-entry only when sim SL fired 2x
+            await self._place_yz()  # Y2/Z2: re-entry independent of sim SL
 
     # ── Fill routing ──────────────────────────────────────────────────────
 
