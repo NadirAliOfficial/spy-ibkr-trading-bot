@@ -267,8 +267,8 @@ async def run():
             logger.error("leg_qty < 1 (ELV=%.2f margin=%.2f) — aborting", sizing_elv, sell_margin)
             return
 
-        logger.info("ELV=%.2f  margin/share=%.2f  qty=%d",
-                    sizing_elv, sell_margin, leg_qty)
+        logger.info("ELV=%.2f  margin/share=%.2f  leg=%d  total=%d",
+                    sizing_elv, sell_margin, leg_qty, leg_qty * 2)
 
     if app.account:
         app.reqAccountUpdates(True, app.account)

@@ -16,7 +16,8 @@ _rp = lambda p: round(round(p / 0.01) * 0.01, 2)
 class OrderManager:
     def __init__(self, app, leg_qty: int, margin_per_share: float = 0.0, margin_pct: float = 1.6):
         self._app = app
-        self._leg = leg_qty          # total shares per position (ELV-2%/margin)
+        self._leg = leg_qty          # shares per sub-order (49% equity each)
+        self._total = leg_qty * 2    # total position size
         self._margin = margin_per_share
         self._margin_pct = margin_pct   # short SPY margin as fraction of price
 
@@ -78,6 +79,7 @@ class OrderManager:
                 logger.info("Qty recalc @59s: leg %d->%d (sizingELV=%.2f margin=%.2f)",
                             self._leg, new_leg, sizing_elv, self._margin)
             self._leg = new_leg
+            self._total = self._leg * 2
 
     async def on_tick(self, price: float, sim_hits: int):
         if self._halted:
@@ -149,7 +151,7 @@ class OrderManager:
     async def _on_y_filled(self, fill_price: float):
         self._cancel_group(self._z)
         self._pos = Side.LONG
-        self._pos_qty = self._leg
+        self._pos_qty = self._total
         self._entry_px = fill_price
         self._pending = False
         self._entries += 1
@@ -159,7 +161,7 @@ class OrderManager:
     async def _on_z_filled(self, fill_price: float):
         self._cancel_group(self._y)
         self._pos = Side.SHORT
-        self._pos_qty = self._leg
+        self._pos_qty = self._total
         self._entry_px = fill_price
         self._pending = False
         self._entries += 1
@@ -188,10 +190,10 @@ class OrderManager:
                 # Combined order already opened the opposite position — flatten it
                 action = "BUY" if was_long else "SELL"
                 oid = self._app.next_id()
-                o = mkt(action, self._leg, 0, transmit=True)
+                o = mkt(action, self._total, 0, transmit=True)
                 o.orderId = oid
                 self._app.placeOrder(oid, CONTRACT, o)
-                logger.info("1s halt flatten: %s %d", action, self._leg)
+                logger.info("1s halt flatten: %s %d", action, self._total)
             return
 
         if not is_reverse:
@@ -204,10 +206,10 @@ class OrderManager:
         # reverse). Otherwise, continue as a regular position so _manage_long/short
         # can arm the next STP3 reverse.
         new_side = Side.SHORT if was_long else Side.LONG
-        self._pos_qty = self._leg
+        self._pos_qty = self._total
         self._entry_px = fill_price
         self._entries += 1
-        logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._leg, self._entries)
+        logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._total, self._entries)
 
         if self._entries >= config.MAX_ENTRIES_PER_CANDLE:
             # Last entry (Y2B/Z2B): place simple exit-only SL, no further reverse.
@@ -278,11 +280,11 @@ class OrderManager:
 
         # OCO removed (NADIR6): Y and Z are independent orders.
         # When one fills, the other is cancelled in code (_on_y_filled / _on_z_filled).
-        # Parent = 1 share STP trigger; child = leg-1 MKT for total leg shares.
-        yp = stp("BUY",  1,              buy_px,  transmit=False);  yp.orderId = y_pid
-        yc = mkt("BUY",  self._leg - 1,  y_pid,   transmit=True);   yc.orderId = y_cid
-        zp = stp("SELL", 1,              sell_px, transmit=False);  zp.orderId = z_pid
-        zc = mkt("SELL", self._leg - 1,  z_pid,   transmit=True);   zc.orderId = z_cid
+        # Parent = 49% equity STP; child = 49% equity MKT; total = leg * 2.
+        yp = stp("BUY",  self._leg, buy_px,  transmit=False);  yp.orderId = y_pid
+        yc = mkt("BUY",  self._leg, y_pid,   transmit=True);   yc.orderId = y_cid
+        zp = stp("SELL", self._leg, sell_px, transmit=False);  zp.orderId = z_pid
+        zc = mkt("SELL", self._leg, z_pid,   transmit=True);   zc.orderId = z_cid
 
         for oid, order in ((y_pid, yp), (y_cid, yc), (z_pid, zp), (z_cid, zc)):
             self._app.placeOrder(oid, CONTRACT, order)
@@ -294,7 +296,7 @@ class OrderManager:
 
     async def _place_stp3(self, action: str, stop_px: float, reverse: bool = False):
         pid, cid = self._app.next_id(), self._app.next_id()
-        child_qty = (2 * self._leg - 1) if reverse else (self._leg - 1)
+        child_qty = (2 * self._total - 1) if reverse else (self._total - 1)
         p = stp(action, 1, stop_px, transmit=False); p.orderId = pid
         c = mkt(action, child_qty, pid, transmit=True); c.orderId = cid
         self._app.placeOrder(pid, CONTRACT, p)
@@ -314,12 +316,12 @@ class OrderManager:
     async def _place_post_rev_sl(self, action: str, stop_px: float):
         pid, cid = self._app.next_id(), self._app.next_id()
         p = stp(action, 1, stop_px, transmit=False); p.orderId = pid
-        c = mkt(action, self._leg - 1, pid, transmit=True); c.orderId = cid
+        c = mkt(action, self._total - 1, pid, transmit=True); c.orderId = cid
         self._app.placeOrder(pid, CONTRACT, p)
         self._app.placeOrder(cid, CONTRACT, c)
         self._rev_stp_pid = pid
         self._rev_stp_cid = cid
-        logger.info("Post-rev SL: %s @ %.2f qty=1+%d", action, stop_px, self._leg - 1)
+        logger.info("Post-rev SL: %s @ %.2f qty=1+%d", action, stop_px, self._total - 1)
 
     # ── Global exit ───────────────────────────────────────────────────────
 

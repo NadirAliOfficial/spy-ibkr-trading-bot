@@ -15,10 +15,11 @@ def et_time(hour: int, minute: int, second: int = 0) -> datetime.datetime:
 
 
 def calc_leg_qty(equity: float, margin_per_share: float) -> int:
-    # spec: (ELV - 2%) / Sell SPY Initial Margin — floor, no split
+    # each Y/Z sub-order = 49% equity; total position = 2 * leg
     if margin_per_share <= 0:
         return 0
-    return max(1, math.floor(equity * 0.98 / margin_per_share))
+    total = math.floor(equity * 0.98 / margin_per_share)
+    return max(1, total // 2)
 
 
 def parse_trading_hours(raw: str) -> list[tuple[datetime.datetime, datetime.datetime]]:
