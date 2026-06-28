@@ -38,10 +38,6 @@ class OrderManager:
         self._entry_px: float = 0.0
         self._bot_realized: float = 0.0   # strategy's own realized P&L (this session)
 
-        self._rev_side: Side = Side.FLAT
-        self._rev_stp_pid: int = 0
-        self._rev_stp_cid: int = 0
-
         self._exit_orders: dict[int, tuple] = {}  # oid → (side, entry_px, reason)
 
         self._sl_count: int = 0
@@ -60,7 +56,7 @@ class OrderManager:
         self._sl_count = 0
         self._sl_sec = -1
         logger.info("Candle open: %.2f", open_price)
-        if self._pos == Side.FLAT and self._rev_side == Side.FLAT:
+        if self._pos == Side.FLAT:
             await self._place_yz()
 
     async def on_59th_second(self):
@@ -82,16 +78,14 @@ class OrderManager:
     async def on_tick(self, price: float, sim_hits: int):
         if self._halted:
             return
-        if self._rev_side != Side.FLAT:
-            pass  # post-rev SL is a live STP @ Open±0.01 — no tick mgmt needed
-        elif self._pos == Side.LONG:
+        if self._pos == Side.LONG:
             await self._manage_long(price)
         elif self._pos == Side.SHORT:
             await self._manage_short(price)
-        elif (self._pos == Side.FLAT and self._rev_side == Side.FLAT and
+        elif (self._pos == Side.FLAT and
               not self._pending and
               self._entries < config.MAX_ENTRIES_PER_CANDLE):
-            await self._place_yz()  # Y2/Z2: re-entry independent of sim SL
+            await self._place_yz()
 
     # ── Fill routing ──────────────────────────────────────────────────────
 
@@ -100,7 +94,6 @@ class OrderManager:
             side, entry, reason = self._exit_orders.pop(order_id)
             self._log_exec(side, entry, fill_price, reason)
             self._pos = Side.FLAT
-            self._rev_side = Side.FLAT
             self._pos_qty = 0
             return
 
@@ -117,9 +110,6 @@ class OrderManager:
 
         elif self._s3_cid and order_id == self._s3_cid:
             await self._on_stp3_filled(fill_price)
-
-        elif self._rev_stp_cid and order_id == self._rev_stp_cid:
-            await self._on_post_rev_sl_filled(fill_price)
 
     async def on_partial_fill(self, order_id: int):
         self._app.cancelOrder(order_id)
@@ -200,40 +190,15 @@ class OrderManager:
             return
 
         # Reverse fired: opens the opposite position (YA, Y2A, or Y2B).
-        # If this is the final allowed entry, use a simple post-rev SL (no further
-        # reverse). Otherwise, continue as a regular position so _manage_long/short
-        # can arm the next STP3 reverse.
         new_side = Side.SHORT if was_long else Side.LONG
         self._pos_qty = self._leg
         self._entry_px = fill_price
         self._entries += 1
         logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._leg, self._entries)
 
-        if self._entries >= config.MAX_ENTRIES_PER_CANDLE:
-            # Last entry (Y2B/Z2B): place simple exit-only SL, no further reverse.
-            self._rev_side = new_side
-            self._pos = Side.FLAT
-            if new_side == Side.SHORT:
-                await self._place_post_rev_sl("BUY", _rp(self._open + 0.01))
-            else:
-                await self._place_post_rev_sl("SELL", _rp(self._open - 0.01))
-        else:
-            # Intermediate reverse (YA, Y2A): keep as active position so STP3
-            # monitoring continues and can reverse again.
-            self._pos = new_side
-            self._rev_side = Side.FLAT
-
-    async def _on_post_rev_sl_filled(self, fill_price: float):
-        halt_1s = self._register_sl()
-        self._log_exec(self._rev_side, self._entry_px, fill_price, "post-rev SL")
-        logger.info("Post-rev SL filled @ %.2f — FLAT (SL/s: %d)", fill_price, self._sl_count)
-        self._rev_side = Side.FLAT
-        self._rev_stp_pid = self._rev_stp_cid = 0
-        self._pos_qty = 0
-        if halt_1s:
-            logger.warning("1-second exit: SL fired 2x — halting candle")
-            self._halted = True
-        # No auto re-entry from here — on_tick handles re-entry when flat.
+        # All entries including Y2B/Z2B: active position managed by _manage_long/_manage_short.
+        # When entries == MAX, _place_stp3 uses reverse=False (normal qty, no further reverse).
+        self._pos = new_side
 
     # ── STP3 position management (primary entries Y / Y2 reverse) ──────────
 
@@ -311,16 +276,6 @@ class OrderManager:
         self._s3_px = 0.0
         self._s3_reverse = False
 
-    async def _place_post_rev_sl(self, action: str, stop_px: float):
-        pid, cid = self._app.next_id(), self._app.next_id()
-        p = stp(action, 1, stop_px, transmit=False); p.orderId = pid
-        c = mkt(action, self._leg - 1, pid, transmit=True); c.orderId = cid
-        self._app.placeOrder(pid, CONTRACT, p)
-        self._app.placeOrder(cid, CONTRACT, c)
-        self._rev_stp_pid = pid
-        self._rev_stp_cid = cid
-        logger.info("Post-rev SL: %s @ %.2f qty=1+%d", action, stop_px, self._leg - 1)
-
     # ── Global exit ───────────────────────────────────────────────────────
 
     async def exit_all(self, reason: str = ""):
@@ -329,9 +284,6 @@ class OrderManager:
         self._cancel_group(self._y)
         self._cancel_group(self._z)
         self._cancel_stp3()
-        for oid in (self._rev_stp_pid, self._rev_stp_cid):
-            if oid:
-                self._app.cancelOrder(oid)
 
         if self._pos != Side.FLAT and self._pos_qty > 0:
             action = "SELL" if self._pos == Side.LONG else "BUY"
@@ -341,14 +293,6 @@ class OrderManager:
             self._app.placeOrder(oid, CONTRACT, o)
             self._exit_orders[oid] = (self._pos, self._entry_px, reason or "exit all")
             logger.info("Flatten pos: %s %d (pending fill for real PnL)", action, self._pos_qty)
-        elif self._rev_side != Side.FLAT and self._pos_qty > 0:
-            action = "BUY" if self._rev_side == Side.SHORT else "SELL"
-            oid = self._app.next_id()
-            o = mkt(action, self._pos_qty, 0, transmit=True)
-            o.orderId = oid
-            self._app.placeOrder(oid, CONTRACT, o)
-            self._exit_orders[oid] = (self._rev_side, self._entry_px, reason or "exit all")
-            logger.info("Flatten rev: %s %d (pending fill for real PnL)", action, self._pos_qty)
 
         self._y = self._z = None
         self._pending = False
@@ -356,8 +300,6 @@ class OrderManager:
         self._s3_px = 0.0
         self._s3_reverse = False
         self._pos, self._pos_qty = Side.FLAT, 0
-        self._rev_side = Side.FLAT
-        self._rev_stp_pid = self._rev_stp_cid = 0
 
     def _cancel_group(self, g: OrderGroup | None):
         if g and not g.filled and not g.cancelled:
