@@ -37,17 +37,15 @@ def already_done_today() -> bool:
     return STATE_FILE.exists() and STATE_FILE.read_text(encoding="utf-8").strip() == _today_str()
 
 
-async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2: SimStopLoss,
-                    order_mgr: OrderManager, risk_mgr: RiskManager,
-                    sim_end, session_end):
+async def tick_loop(app, candles: CandleBuilder, sim_sl_short: SimStopLoss, sim_sl_noon: SimStopLoss,
+                    order_mgr: OrderManager, risk_mgr: RiskManager, session_end):
     logger.info("Tick loop started")
-    phase = 1  # 1 = 9:30am-12:30pm, 2 = 12:30pm-4pm
     fired_59s = False
-    last_price = 0.0  # track for prev_close when candle rolls
+    last_price = 0.0
     session_start_ts = et_time(config.OPEN_HOUR, config.OPEN_MIN).timestamp()
+    eod_end = et_time(config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
 
-    # Run until session close — the simulated stop loss must keep tracking for the
-    # post-trade report even after live trading stops (noon/TP/hard-SL exit).
+    # Run until 12:30pm — sim SL noon keeps tracking after trading stops at 10am.
     while now_et() < session_end:
         try:
             event = await asyncio.wait_for(app.tick_queue.get(), timeout=1.0)
@@ -80,31 +78,23 @@ async def tick_loop(app, candles: CandleBuilder, sim_sl_1: SimStopLoss, sim_sl_2
         prev_close = last_price
         last_price = price
 
-        if phase == 1:
-            if now_et() >= sim_end:
-                phase = 2
-                sim_sl_1.finalize()
-                logger.info("Sim SL phase 1 closed (9:30am-12:30pm)")
-            else:
-                if is_new:
-                    sim_sl_1.new_candle(candle.open, candle.minute_ts, prev_close)
-                    fired_59s = False
-            sim_hits = sim_sl_1.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
-        else:
-            if is_new:
-                sim_sl_2.new_candle(candle.open, candle.minute_ts, prev_close)
-                fired_59s = False
-            sim_hits = sim_sl_2.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
+        before_eod = now_et() < eod_end
+        if is_new:
+            if before_eod:
+                sim_sl_short.new_candle(candle.open, candle.minute_ts, prev_close)
+            sim_sl_noon.new_candle(candle.open, candle.minute_ts, prev_close)
+            fired_59s = False
 
-        # Order management only while trading is active; sim SL above always runs.
+        if before_eod:
+            sim_sl_short.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
+        sim_hits = sim_sl_noon.on_tick(price, order_mgr.last_bid, order_mgr.last_ask)
+
         if not risk_mgr.done:
             if is_new:
                 asyncio.create_task(order_mgr.on_candle_open(candle.open))
-
             if candles.seconds_into_candle(ts) >= 59.0 and not fired_59s:
                 fired_59s = True
                 asyncio.create_task(order_mgr.on_59th_second())
-
             asyncio.create_task(order_mgr.on_tick(price, sim_hits))
 
     logger.info("Tick loop done")
@@ -145,7 +135,23 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
     logger.info("Order loop done")
 
 
-async def noon_report_task(sim_sl_1: SimStopLoss, candles: CandleBuilder,
+async def short_report_task(sim_sl_short: SimStopLoss, candles: CandleBuilder):
+    target = et_time(config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
+    wait = (target - now_et()).total_seconds()
+    if wait > 0:
+        await asyncio.sleep(wait)
+
+    sim_sl_short.finalize()
+    trading_candles = [c for c in candles.history if c.minute_ts < target.timestamp()]
+    report = generate_report(sim_sl_short.records, trading_candles)
+    print(report)
+    save_report(report, "post_trade_report_trading.txt")
+    email_report(sim_sl_short.records, trading_candles,
+                 subject="SPY Bot — Post-Trade Report (9:30am–10:00am)")
+    logger.info("Trading window report emailed (9:30am-10am)")
+
+
+async def noon_report_task(sim_sl_noon: SimStopLoss, candles: CandleBuilder,
                            order_mgr: OrderManager, risk_mgr: RiskManager):
     target = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN)
     wait = (target - now_et()).total_seconds()
@@ -153,15 +159,14 @@ async def noon_report_task(sim_sl_1: SimStopLoss, candles: CandleBuilder,
         return  # already past 12:30pm at startup — skip
     await asyncio.sleep(wait)
 
-    sim_sl_1.finalize()
-    # candles.history at 12:30pm contains only AM candles (9:30–12:30)
+    sim_sl_noon.finalize()
     am_candles = list(candles.history)
-    report = generate_report(sim_sl_1.records, am_candles)
+    report = generate_report(sim_sl_noon.records, am_candles)
     print(report)
     save_report(report, "post_trade_report_am.txt")
-    email_report(sim_sl_1.records, am_candles,
+    email_report(sim_sl_noon.records, am_candles,
                  subject="SPY Bot — Post-Trade Report (9:30am–12:30pm)")
-    logger.info("Phase 1 report emailed (9:30am-12:30pm)")
+    logger.info("Noon report emailed (9:30am-12:30pm)")
 
     if risk_mgr.check_noon(risk_mgr.current_pnl):
         logger.warning("12:30pm exit: pnl=%.2f < 4.5%%", risk_mgr.current_pnl)
@@ -275,41 +280,26 @@ async def run():
         app.reqPnL(app.next_id(), app.account, "")
 
     candles = CandleBuilder()
-    sim_sl_1 = SimStopLoss()  # 9:30am-12:30pm
-    sim_sl_2 = SimStopLoss()  # 12:30pm-4pm
+    sim_sl_short = SimStopLoss()  # 9:30am-10:00am (report sent at EOD_EXIT)
+    sim_sl_noon = SimStopLoss()   # 9:30am-12:30pm (report sent at 12:30pm)
     order_mgr = OrderManager(app, leg_qty, sell_margin, margin_pct)
     risk_mgr = RiskManager(elv)
     if config.SIM_ONLY:
         risk_mgr.done = True   # disables order placement; tick loop still runs the sim SL
 
-    sim_end = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN)
-    session_end = sim_end  # tick_loop runs until 12:30pm so sim SL keeps tracking; EOD exit task stops trading earlier
+    session_end = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN)
 
     await asyncio.gather(
-        tick_loop(app, candles, sim_sl_1, sim_sl_2, order_mgr, risk_mgr, sim_end, session_end),
+        tick_loop(app, candles, sim_sl_short, sim_sl_noon, order_mgr, risk_mgr, session_end),
         order_loop(app, order_mgr, risk_mgr),
-        noon_report_task(sim_sl_1, candles, order_mgr, risk_mgr),
+        short_report_task(sim_sl_short, candles),
+        noon_report_task(sim_sl_noon, candles, order_mgr, risk_mgr),
         eod_exit_task(order_mgr, risk_mgr),
     )
 
-    # Session is over (terminal exit or EOD) — block re-entry on restart today
     mark_day_done()
-
     app.cancelMktData(mkt_req_id)
-    sim_sl_2.finalize()
     candles.finalize()
-    if sim_sl_2.records:
-        sim_end_ts = sim_end.timestamp()
-        pm_candles = [c for c in candles.history if c.minute_ts >= sim_end_ts]
-        report = generate_report(sim_sl_2.records, pm_candles)
-        print(report)
-        save_report(report, "post_trade_report_pm.txt")
-        email_report(sim_sl_2.records, pm_candles,
-                     subject="SPY Bot — Post-Trade Report (12:30pm–4:00pm)")
-        logger.info("Phase 2 report emailed (12:30pm-4pm)")
-    else:
-        logger.info("No phase 2 data — skipping PM report")
-
     app.disconnect()
     logger.info("Session complete")
 

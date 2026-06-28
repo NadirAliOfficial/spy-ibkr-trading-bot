@@ -13,7 +13,8 @@ ET = ZoneInfo("America/New_York")
 
 
 def _fmt_time(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=ET).strftime("%H:%M:%S")
+    dt = datetime.fromtimestamp(ts, tz=ET)
+    return dt.strftime("%-I:%M:%S") + dt.strftime("%p").lower() + " ET"
 
 
 def _build_data(sim_records: list[CandleRecord], candles: list[Candle]):
