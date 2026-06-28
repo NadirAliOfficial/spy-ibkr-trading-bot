@@ -391,8 +391,8 @@ setInterval(updateMarket,30000); updateMarket();
 
 // ── Tag helpers
 function tagCls(msg){
-  if(/Y LONG filled|Reverse filled.*LONG/i.test(msg)) return 'long';
-  if(/Z SHORT filled|Reverse filled.*SHORT/i.test(msg)) return 'short';
+  if(/Y LONG filled|Reverse entered.*LONG/i.test(msg)) return 'long';
+  if(/Z SHORT filled|Reverse entered.*SHORT/i.test(msg)) return 'short';
   if(/WARNING|Risk exit|noon exit|SL fired|halting|Early close/i.test(msg)) return 'warn';
   if(/Connected|Session complete/i.test(msg)) return 'system';
   return 'info';
@@ -417,7 +417,7 @@ async function refresh(){
     // stats
     document.getElementById('elv-val').textContent=d.elv?'$'+Number(d.elv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';
     document.getElementById('open-val').textContent=d.candle_open?'$'+d.candle_open:'--';
-    document.getElementById('entries-sub').textContent=(d.entries||0)+' / 4 entries';
+    document.getElementById('entries-sub').textContent=(d.entries||0)+' / 5 entries';
     document.getElementById('leg-val').textContent=d.leg_qty||'--';
 
     // Account PnL (IBKR daily)
@@ -490,10 +490,9 @@ setInterval(refresh,5000);
 </html>"""
 
 TRADE_KEYWORDS = [
-    "Y LONG filled", "Z SHORT filled", "STP3 filled", "Reverse filled",
-    "Exit all", "Reverse flattened", "Y/Z OCO", "Candle open",
-    "Risk exit", "noon exit", "3:59pm", "Session complete",
-    "Early close", "ELV=", "Connected",
+    "Y LONG filled", "Z SHORT filled", "STP3 filled", "Reverse entered",
+    "Exit all", "Candle open", "Risk exit", "noon exit",
+    "3:59pm", "Session complete", "Early close", "ELV=", "Connected",
 ]
 
 SKIP_LOGGERS = {"ibapi.wrapper", "ibapi.client", "ibapi.decoder", "ibapi.comm"}
@@ -546,10 +545,11 @@ def parse_log():
             m2 = re.search(r"ELV=([\d.]+)", msg)
             if m2:
                 state["elv"] = float(m2.group(1))
-        if re.search(r"\bleg=(\d+)", msg):
-            m2 = re.search(r"\bleg=(\d+)", msg)
-            if m2:
-                state["leg_qty"] = int(m2.group(1))
+        m2 = re.search(r"\bqty=(\d+)", msg)   # main.py startup: ELV=X margin/share=Y qty=N
+        if not m2:
+            m2 = re.search(r"leg \d+->(\d+)", msg)  # manager.py recalc: leg 142->141
+        if m2:
+            state["leg_qty"] = int(m2.group(1))
         if "Candle open:" in msg:
             m2 = re.search(r"Candle open: ([\d.]+)", msg)
             if m2:
@@ -580,7 +580,7 @@ def parse_log():
             if m2:
                 state["position"] = m2.group(1)
                 state["pos_qty"] = m2.group(2)
-        if ("Post-rev SL filled" in msg or "Exit all" in msg or "Exit only" in msg
+        if ("Exit all" in msg or "Exit only" in msg
                 or "halt flatten" in msg or "Session complete" in msg):
             state["position"] = "FLAT"
             state["entry_price"] = None
