@@ -168,10 +168,6 @@ async def noon_report_task(sim_sl_noon: SimStopLoss, candles: CandleBuilder,
                  subject="SPY Bot — Post-Trade Report (9:30am–12:30pm)")
     logger.info("Noon report emailed (9:30am-12:30pm)")
 
-    if risk_mgr.check_noon(risk_mgr.current_pnl):
-        logger.warning("12:30pm exit: pnl=%.2f < 4.5%%", risk_mgr.current_pnl)
-        await order_mgr.exit_all("12:30pm noon exit")
-
 
 async def eod_exit_task(order_mgr: OrderManager, risk_mgr: RiskManager):
     target = et_time(config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
@@ -181,8 +177,11 @@ async def eod_exit_task(order_mgr: OrderManager, risk_mgr: RiskManager):
         await asyncio.sleep(5.0)
     if not risk_mgr.done:
         risk_mgr.done = True
-        await order_mgr.exit_all("3:59pm eod")
-        logger.info("3:59pm exit complete")
+        await order_mgr.exit_all("10am eod")
+        logger.info("10am exit complete")
+    if risk_mgr.check_noon(risk_mgr.current_pnl):
+        logger.warning("10am exit: pnl=%.2f < 4.5%% — day done, no re-entry", risk_mgr.current_pnl)
+        mark_day_done()
 
 
 async def wait_until(hour: int, minute: int, label: str):
