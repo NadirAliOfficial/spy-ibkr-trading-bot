@@ -328,7 +328,7 @@ header {
   <div class="card">
     <div class="card-label">Account PnL</div>
     <div class="card-value flat" id="daily-pnl-val">--</div>
-    <div class="card-sub">IBKR daily P&amp;L</div>
+    <div class="card-sub" id="daily-pnl-sub">IBKR daily P&amp;L · all positions</div>
   </div>
   <div class="card">
     <div class="card-label">Strategy PnL</div>
@@ -422,11 +422,14 @@ async function refresh(){
 
     // Account PnL (IBKR daily)
     const dpEl=document.getElementById('daily-pnl-val');
+    const dpSub=document.getElementById('daily-pnl-sub');
     const dp=(d.daily_pnl!==null&&d.daily_pnl!==undefined)?d.daily_pnl:null;
     if(dp!==null){
       dpEl.textContent=(dp>=0?'+':'')+'$'+Math.abs(dp).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
       dpEl.className='card-value '+(dp>0?'long':dp<0?'short':'flat');
-    } else { dpEl.textContent='--'; dpEl.className='card-value flat'; }
+      const dpPct=(d.elv&&d.elv>0)?(dp/d.elv)*100:null;
+      dpSub.textContent=(dpPct!==null?((dpPct>=0?'+':'')+dpPct.toFixed(2)+'% · '):'')+'IBKR daily P&L · all positions';
+    } else { dpEl.textContent='--'; dpEl.className='card-value flat'; dpSub.textContent='IBKR daily P&L · all positions'; }
 
     // Strategy PnL (real fills, excludes commissions)
     const pnlEl=document.getElementById('pnl-val');
@@ -545,11 +548,14 @@ def parse_log():
             m2 = re.search(r"ELV=([\d.]+)", msg)
             if m2:
                 state["elv"] = float(m2.group(1))
-        m2 = re.search(r"\bqty=(\d+)", msg)   # main.py startup: ELV=X margin/share=Y qty=N
-        if not m2:
-            m2 = re.search(r"leg \d+->(\d+)", msg)  # manager.py recalc: leg 142->141
-        if m2:
-            state["leg_qty"] = int(m2.group(1))
+        if "margin/share=" in msg:
+            m2 = re.search(r"\bqty=(\d+)", msg)
+            if m2:
+                state["leg_qty"] = int(m2.group(1))
+        elif "->" in msg:
+            m2 = re.search(r"leg \d+->(\d+)", msg)
+            if m2:
+                state["leg_qty"] = int(m2.group(1))
         if "Candle open:" in msg:
             m2 = re.search(r"Candle open: ([\d.]+)", msg)
             if m2:
