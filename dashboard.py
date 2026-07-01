@@ -1,6 +1,6 @@
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, render_template_string
 
@@ -285,8 +285,16 @@ header {
       <div class="brand-sub" id="acc">Connecting...</div>
     </div>
   </div>
-  <div class="status-chip stopped" id="chip">
-    <span class="dot"></span><span id="chip-txt">Offline</span>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <div class="status-chip stopped" id="chip">
+      <span class="dot"></span><span id="chip-txt">Offline</span>
+    </div>
+    <button id="stop-btn" onclick="stopBot()"
+      style="display:none;padding:6px 16px;border-radius:20px;border:1px solid #ef444460;
+             background:#ef444415;color:#ef4444;font-size:12px;font-weight:700;
+             letter-spacing:0.8px;text-transform:uppercase;cursor:pointer;">
+      STOP BOT
+    </button>
   </div>
 </header>
 
@@ -413,6 +421,7 @@ async function refresh(){
     const chipClass={running:'running',waiting:'waiting',holiday:'waiting',ended:'waiting',stopped:'stopped'};
     chip.className='status-chip '+(chipClass[d.status]||'stopped');
     document.getElementById('chip-txt').textContent=statusMap[d.status]||d.status;
+    document.getElementById('stop-btn').style.display=d.status==='running'?'block':'none';
 
     // stats
     document.getElementById('elv-val').textContent=d.elv?'$'+Number(d.elv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';
@@ -425,10 +434,11 @@ async function refresh(){
     const dpSub=document.getElementById('daily-pnl-sub');
     const dp=(d.daily_pnl!==null&&d.daily_pnl!==undefined)?d.daily_pnl:null;
     if(dp!==null){
+      const dpPct=(d.elv&&d.elv>0)?(dp/d.elv)*100:null;
+      const dpPctStr=dpPct!==null?' · '+(dpPct>=0?'+':'')+dpPct.toFixed(2)+'%':'';
       dpEl.textContent=(dp>=0?'+':'')+'$'+Math.abs(dp).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
       dpEl.className='card-value '+(dp>0?'long':dp<0?'short':'flat');
-      const dpPct=(d.elv&&d.elv>0)?(dp/d.elv)*100:null;
-      dpSub.textContent=(dpPct!==null?((dpPct>=0?'+':'')+dpPct.toFixed(2)+'% · '):'')+'IBKR daily P&L · all positions';
+      dpSub.textContent='IBKR daily P&L · all positions'+dpPctStr;
     } else { dpEl.textContent='--'; dpEl.className='card-value flat'; dpSub.textContent='IBKR daily P&L · all positions'; }
 
     // Strategy PnL (real fills, excludes commissions)
@@ -462,7 +472,7 @@ async function refresh(){
           <div class="trade-body">
             <span class="trade-chip ${c}">${tagLabel(c)}</span>
             <div class="trade-text">${t.msg}</div>
-            <div class="trade-ts">${t.ts} UTC</div>
+            <div class="trade-ts">${t.ts} ET</div>
           </div>
         </div>`;
       }).join('');
@@ -488,6 +498,18 @@ async function refresh(){
 }
 refresh();
 setInterval(refresh,5000);
+
+async function stopBot(){
+  if(!confirm('Stop the bot and close all positions?')) return;
+  const btn=document.getElementById('stop-btn');
+  btn.textContent='STOPPING...'; btn.disabled=true;
+  try{
+    const r=await fetch('/api/stop',{method:'POST'});
+    const d=await r.json();
+    if(d.ok){ btn.textContent='STOPPED'; }
+    else{ btn.textContent='STOP BOT'; btn.disabled=false; alert('Error: '+d.msg); }
+  }catch(e){ btn.textContent='STOP BOT'; btn.disabled=false; }
+}
 </script>
 </body>
 </html>"""
@@ -528,7 +550,8 @@ def parse_log():
         if not m:
             continue
         ts_full, level, logger, msg = m.group(1), m.group(2), m.group(3), m.group(4)
-        ts = ts_full[11:19]
+        dt_utc = datetime.strptime(ts_full[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        ts = dt_utc.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
         key = (ts, msg)
         if key in seen:
             continue
@@ -567,20 +590,20 @@ def parse_log():
         m_entry = re.search(r"entry#(\d+)", msg)   # entry# is on the fill lines
         if m_entry:
             state["entries"] = int(m_entry.group(1))
-        if "LONG filled @" in msg:
+        if "LONG parent filled @" in msg:
             state["position"] = "LONG"
-            if state["leg_qty"]:
-                state["pos_qty"] = state["leg_qty"] * 2
             m2 = re.search(r"filled @ ([\d.]+)", msg)
             if m2:
                 state["entry_price"] = m2.group(1)
-        elif "SHORT filled @" in msg:
+        elif "SHORT parent filled @" in msg:
             state["position"] = "SHORT"
-            if state["leg_qty"]:
-                state["pos_qty"] = state["leg_qty"] * 2
             m2 = re.search(r"filled @ ([\d.]+)", msg)
             if m2:
                 state["entry_price"] = m2.group(1)
+        elif "total pos=" in msg:
+            m2 = re.search(r"total pos=(\d+)", msg)
+            if m2:
+                state["pos_qty"] = int(m2.group(1))
         elif "Reverse entered: now" in msg:   # STP3 reverse flips the position
             m2 = re.search(r"now (\w+) (\d+)", msg)
             if m2:
@@ -621,9 +644,22 @@ def index():
     return render_template_string(HTML)
 
 
+STOP_FLAG = os.path.join(os.path.dirname(__file__), "bot_stop.txt")
+
+
 @app.route("/api/state")
 def api_state():
     return jsonify(parse_log())
+
+
+@app.route("/api/stop", methods=["POST"])
+def api_stop():
+    try:
+        with open(STOP_FLAG, "w") as f:
+            f.write("stop")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
 
 
 if __name__ == "__main__":

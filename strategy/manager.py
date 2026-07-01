@@ -31,7 +31,9 @@ class OrderManager:
         self._s3_pid: int = 0
         self._s3_cid: int = 0
         self._s3_px: float = 0.0
+        self._s3_qty: int = 0           # total shares in STP3 bracket (parent+child)
         self._s3_reverse: bool = False
+        self._placing_stp3: bool = False
 
         self._pos: Side = Side.FLAT
         self._pos_qty: int = 0
@@ -42,6 +44,9 @@ class OrderManager:
 
         self._sl_count: int = 0
         self._sl_sec: int = -1
+
+        self.total_bought: int = 0
+        self.total_sold: int = 0
 
         self.last_bid: float = 0.0
         self.last_ask: float = 0.0
@@ -66,8 +71,9 @@ class OrderManager:
     def _recalc_qty(self):
         price = (self.last_bid + self.last_ask) / 2 if self.last_bid > 0 and self.last_ask > 0 else self._open
         elv = self._app.equity_with_loan
+        prev_day_elv = self._app.prev_day_elv
         if elv > 0 and price > 10:
-            sizing_elv = elv
+            sizing_elv = min(prev_day_elv, elv) if prev_day_elv > 0 else elv
             self._margin = round(price * self._margin_pct, 2)
             new_leg = calc_leg_qty(sizing_elv, self._margin)
             if new_leg != self._leg:
@@ -89,26 +95,49 @@ class OrderManager:
 
     # ── Fill routing ──────────────────────────────────────────────────────
 
-    async def on_fill(self, order_id: int, fill_price: float):
+    async def on_fill(self, order_id: int, fill_price: float, fill_qty: int = 0):
         if order_id in self._exit_orders:
-            side, entry, reason = self._exit_orders.pop(order_id)
-            self._log_exec(side, entry, fill_price, reason)
+            side, entry, qty, reason = self._exit_orders.pop(order_id)
+            self._log_exec(side, entry, fill_price, reason, qty)
             self._pos = Side.FLAT
             self._pos_qty = 0
             return
 
-        if self._y and order_id in (self._y.parent_id, self._y.child_id) and not self._y.filled:
-            self._y.filled = True
+        # Y parent filled — start LONG position with 1 share, child fills add to it
+        if self._y and not self._y.cancelled and not self._y.parent_filled and order_id == self._y.parent_id:
+            self._y.parent_filled = True
             self._y.entry_price = fill_price
-            await self._on_y_filled(fill_price)
+            await self._on_y_parent_filled(fill_price)
+            return
 
-        elif self._z and order_id in (self._z.parent_id, self._z.child_id) and not self._z.filled:
-            self._z.filled = True
+        # Y child filled (full or partial exec before cancel)
+        if self._y and self._y.parent_filled and not self._y.filled and order_id == self._y.child_id:
+            qty = max(1, int(fill_qty)) if fill_qty else 1
+            self._pos_qty += qty
+            self.total_bought += qty
+            logger.info("Y child filled %d shares → total pos=%d", qty, self._pos_qty)
+            if self._pos_qty >= self._leg:
+                self._y.filled = True
+            return
+
+        # Z parent filled — start SHORT position with 1 share
+        if self._z and not self._z.cancelled and not self._z.parent_filled and order_id == self._z.parent_id:
+            self._z.parent_filled = True
             self._z.entry_price = fill_price
-            await self._on_z_filled(fill_price)
+            await self._on_z_parent_filled(fill_price)
+            return
 
+        # Z child filled
+        if self._z and self._z.parent_filled and not self._z.filled and order_id == self._z.child_id:
+            qty = max(1, int(fill_qty)) if fill_qty else 1
+            self._pos_qty += qty
+            self.total_sold += qty
+            logger.info("Z child filled %d shares → total pos=%d", qty, self._pos_qty)
+            if self._pos_qty >= self._leg:
+                self._z.filled = True
+            return
 
-        elif self._s3_cid and order_id == self._s3_cid:
+        if self._s3_cid and order_id == self._s3_cid:
             await self._on_stp3_filled(fill_price)
 
     async def on_partial_fill(self, order_id: int):
@@ -124,11 +153,9 @@ class OrderManager:
         self._sl_sec = sec
         return self._sl_count >= 2
 
-    def _log_exec(self, side: Side, entry: float, exit_px: float, reason: str):
-        """Execution check line: open, fill, exit, labelled Stop Loss or Take Profit.
-        Accumulates the strategy's own realized P&L (independent of account PnL)."""
+    def _log_exec(self, side: Side, entry: float, exit_px: float, reason: str, qty: int = 0):
         pnl_sh = (exit_px - entry) if side == Side.LONG else (entry - exit_px)
-        trade_pnl = round(pnl_sh * self._pos_qty, 2)
+        trade_pnl = round(pnl_sh * (qty or self._pos_qty), 2)
         self._bot_realized = round(self._bot_realized + trade_pnl, 2)
         kind = "TAKE PROFIT" if pnl_sh >= 0 else "STOP LOSS"
         logger.info("EXEC %s | open=%.2f fill=%.2f exit=%.2f | %s (%s) | trade=%.2f botPnL=%.2f",
@@ -136,25 +163,25 @@ class OrderManager:
 
     # ── Entry fills ───────────────────────────────────────────────────────
 
-    async def _on_y_filled(self, fill_price: float):
+    async def _on_y_parent_filled(self, fill_price: float):
         self._cancel_group(self._z)
         self._pos = Side.LONG
-        self._pos_qty = self._leg
+        self._pos_qty = 1  # parent is 1 share; child fills add to this
         self._entry_px = fill_price
         self._pending = False
         self._entries += 1
-        logger.info("Y LONG filled @ %.2f (entry#%d)", fill_price, self._entries)
-        # STP3 armed by _manage_long when SPY <= Open-0.01 (SELL STP @ Bid-0.03)
+        self.total_bought += 1
+        logger.info("Y LONG parent filled @ %.2f (entry#%d)", fill_price, self._entries)
 
-    async def _on_z_filled(self, fill_price: float):
+    async def _on_z_parent_filled(self, fill_price: float):
         self._cancel_group(self._y)
         self._pos = Side.SHORT
-        self._pos_qty = self._leg
+        self._pos_qty = 1  # parent is 1 share; child fills add to this
         self._entry_px = fill_price
         self._pending = False
         self._entries += 1
-        logger.info("Z SHORT filled @ %.2f (entry#%d)", fill_price, self._entries)
-        # STP3 armed by _manage_short when SPY >= Open+0.01 (BUY STP @ Ask+0.03)
+        self.total_sold += 1
+        logger.info("Z SHORT parent filled @ %.2f (entry#%d)", fill_price, self._entries)
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
 
@@ -163,11 +190,17 @@ class OrderManager:
 
         was_long = self._pos == Side.LONG
         is_reverse = self._s3_reverse
+        old_qty = self._pos_qty  # save before reset — reverse opens same qty
 
         self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
+        if was_long:
+            self.total_sold += self._s3_qty
+        else:
+            self.total_bought += self._s3_qty
         self._pos, self._pos_qty = Side.FLAT, 0
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
+        self._s3_qty = 0
         self._s3_reverse = False
         logger.info("STP3 filled @ %.2f (SL/s: %d, reverse=%s)", fill_price, self._sl_count, is_reverse)
 
@@ -175,13 +208,17 @@ class OrderManager:
             logger.warning("1-second exit: SL fired 2x — halting candle")
             self._halted = True
             if is_reverse:
-                # Combined order already opened the opposite position — flatten it
+                # Reverse already opened opposite position — flatten it now
                 action = "BUY" if was_long else "SELL"
                 oid = self._app.next_id()
-                o = mkt(action, self._leg, 0, transmit=True)
+                o = mkt(action, old_qty, 0, transmit=True)
                 o.orderId = oid
                 self._app.placeOrder(oid, CONTRACT, o)
-                logger.info("1s halt flatten: %s %d", action, self._leg)
+                if action == "BUY":
+                    self.total_bought += old_qty
+                else:
+                    self.total_sold += old_qty
+                logger.info("1s halt flatten: %s %d", action, old_qty)
             return
 
         if not is_reverse:
@@ -189,15 +226,12 @@ class OrderManager:
             self._halted = True
             return
 
-        # Reverse fired: opens the opposite position (YA, Y2A, or Y2B).
+        # Reverse fired: opens the opposite position (YA, Y2, Y2A, Y2B etc.)
         new_side = Side.SHORT if was_long else Side.LONG
-        self._pos_qty = self._leg
+        self._pos_qty = old_qty  # reversed position has same qty as the one just closed
         self._entry_px = fill_price
         self._entries += 1
-        logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._leg, self._entries)
-
-        # All entries including Y2B/Z2B: active position managed by _manage_long/_manage_short.
-        # When entries == MAX, _place_stp3 uses reverse=False (normal qty, no further reverse).
+        logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._pos_qty, self._entries)
         self._pos = new_side
 
     # ── STP3 position management (primary entries Y / Y2 reverse) ──────────
@@ -207,11 +241,10 @@ class OrderManager:
         if price >= favor:
             if self._s3_pid:
                 self._cancel_stp3()                  # recovered — cancel stop
-        elif price <= arm and not self._s3_pid:
-            bid = self.last_bid if self.last_bid > 0 else price
-            stop = _rp(bid - 0.03)
-            logger.info("STP3 arm LONG: SPY=%.2f<=Open-0.01=%.2f  bid=%.2f  stop=bid-0.03=%.2f",
-                        price, arm, bid, stop)
+        elif price <= arm and not self._s3_pid and not self._placing_stp3:
+            stop = _rp(price - 0.03)                 # NADIR11: use Last price, not bid
+            logger.info("STP3 arm LONG: SPY=%.2f<=Open-0.01=%.2f  stop=last-0.03=%.2f",
+                        price, arm, stop)
             await self._place_stp3("SELL", stop, reverse=self._entries < config.MAX_ENTRIES_PER_CANDLE)
 
     async def _manage_short(self, price: float):
@@ -219,11 +252,10 @@ class OrderManager:
         if price <= favor:
             if self._s3_pid:
                 self._cancel_stp3()                  # recovered — cancel stop
-        elif price >= arm and not self._s3_pid:
-            ask = self.last_ask if self.last_ask > 0 else price
-            stop = _rp(ask + 0.03)
-            logger.info("STP3 arm SHORT: SPY=%.2f>=Open+0.01=%.2f  ask=%.2f  stop=ask+0.03=%.2f",
-                        price, arm, ask, stop)
+        elif price >= arm and not self._s3_pid and not self._placing_stp3:
+            stop = _rp(price + 0.03)                 # NADIR11: use Last price, not ask
+            logger.info("STP3 arm SHORT: SPY=%.2f>=Open+0.01=%.2f  stop=last+0.03=%.2f",
+                        price, arm, stop)
             await self._place_stp3("BUY", stop, reverse=self._entries < config.MAX_ENTRIES_PER_CANDLE)
 
     # ── Order placement ───────────────────────────────────────────────────
@@ -242,7 +274,7 @@ class OrderManager:
         buy_px, sell_px = _rp(self._open + 0.01), _rp(self._open - 0.01)
 
         # OCO removed (NADIR6/7): Y and Z are independent orders.
-        # When one fills, the other is cancelled in code (_on_y_filled / _on_z_filled).
+        # When one fills, the other is cancelled in code (_on_y_parent_filled / _on_z_parent_filled).
         # Parent = 1 share STP trigger; child = leg-1 MKT for total leg shares.
         yp = stp("BUY",  1,             buy_px,  transmit=False);  yp.orderId = y_pid
         yc = mkt("BUY",  self._leg - 1, y_pid,   transmit=True);   yc.orderId = y_cid
@@ -258,14 +290,18 @@ class OrderManager:
         logger.info("Y/Z placed: BUY=%.2f SELL=%.2f (entries so far=%d)", buy_px, sell_px, self._entries)
 
     async def _place_stp3(self, action: str, stop_px: float, reverse: bool = False):
+        self._placing_stp3 = True
         pid, cid = self._app.next_id(), self._app.next_id()
-        child_qty = (2 * self._leg - 1) if reverse else (self._leg - 1)
+        # Use actual filled position size, not assumed leg_qty
+        child_qty = (2 * self._pos_qty - 1) if reverse else (self._pos_qty - 1)
         p = stp(action, 1, stop_px, transmit=False); p.orderId = pid
         c = mkt(action, child_qty, pid, transmit=True); c.orderId = cid
         self._app.placeOrder(pid, CONTRACT, p)
         self._app.placeOrder(cid, CONTRACT, c)
         self._s3_pid, self._s3_cid, self._s3_px = pid, cid, stop_px
+        self._s3_qty = 1 + child_qty
         self._s3_reverse = reverse
+        self._placing_stp3 = False
         logger.info("STP3: %s @ %.2f qty=1+%d reverse=%s", action, stop_px, child_qty, reverse)
 
     def _cancel_stp3(self):
@@ -275,6 +311,7 @@ class OrderManager:
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
         self._s3_reverse = False
+        self._placing_stp3 = False
 
     # ── Global exit ───────────────────────────────────────────────────────
 
@@ -291,7 +328,11 @@ class OrderManager:
             o = mkt(action, self._pos_qty, 0, transmit=True)
             o.orderId = oid
             self._app.placeOrder(oid, CONTRACT, o)
-            self._exit_orders[oid] = (self._pos, self._entry_px, reason or "exit all")
+            self._exit_orders[oid] = (self._pos, self._entry_px, self._pos_qty, reason or "exit all")
+            if action == "SELL":
+                self.total_sold += self._pos_qty
+            else:
+                self.total_bought += self._pos_qty
             logger.info("Flatten pos: %s %d (pending fill for real PnL)", action, self._pos_qty)
 
         self._y = self._z = None

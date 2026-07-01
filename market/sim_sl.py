@@ -22,10 +22,9 @@ class SimStopLoss:
 
     Logic (long, mirror for short):
       - Enter long when SPY >= Open+0.01.
-      - When SPY <= Open-0.01, arm the stop at Bid-0.03 (capture Bid at that
-        moment).
+      - When SPY <= Open-0.01, arm the stop at Last-0.03.
       - Record one trigger when SPY <= the armed stop level, then reverse to
-        short and follow the same process (arm at Ask+0.03 when SPY >= Open+0.01).
+        short and follow the same process (arm at Last+0.03 when SPY >= Open+0.01).
       - If SPY recovers to the favourable side before the stop fires, the stop
         disarms.
       - A candle that moves one direction and never hits the stop records 0.
@@ -52,12 +51,9 @@ class SimStopLoss:
         self._state = self.FLAT
         self._stop = None
 
-    def on_tick(self, price: float, bid: float = 0.0, ask: float = 0.0) -> int:
+    def on_tick(self, price: float) -> int:
         if self._current is None:
             return 0
-
-        b = bid if bid > 0 else price
-        a = ask if ask > 0 else price
 
         if self._state == self.FLAT:
             if price >= self._up:
@@ -69,7 +65,7 @@ class SimStopLoss:
             if price >= self._up:
                 self._stop = None                       # recovered — disarm
             elif self._stop is None and price <= self._down:
-                self._stop = _rp(b - 0.03)              # arm at Bid-0.03
+                self._stop = _rp(price - 0.03)          # arm at Last-0.03
             if self._stop is not None and price <= self._stop:
                 self._current.sim_sl_hits += 1          # stop fired
                 self._state = self.SHORT
@@ -79,7 +75,7 @@ class SimStopLoss:
             if price <= self._down:
                 self._stop = None                       # recovered — disarm
             elif self._stop is None and price >= self._up:
-                self._stop = _rp(a + 0.03)              # arm at Ask+0.03
+                self._stop = _rp(price + 0.03)          # arm at Last+0.03
             if self._stop is not None and price >= self._stop:
                 self._current.sim_sl_hits += 1          # stop fired
                 self._state = self.LONG

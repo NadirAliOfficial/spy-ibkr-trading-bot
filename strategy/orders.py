@@ -19,6 +19,7 @@ class OrderGroup:
     entry_price: float = 0.0
     filled: bool = False
     cancelled: bool = False
+    parent_filled: bool = False
 
 
 _ACCOUNT = ""

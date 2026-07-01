@@ -48,6 +48,7 @@ class IBApp(EWrapper, EClient):
         self.sell_init_margin: float = 0.0
         self.last_price: float = 0.0
         self._next_order_id: int = 1
+        self._tbt_active: bool = False
 
     def next_id(self) -> int:
         oid = self._next_order_id
@@ -90,9 +91,20 @@ class IBApp(EWrapper, EClient):
         if price > 0:
             if tickType in (4, 68):  # LAST / DELAYED_LAST
                 self.last_price = price
+                if self._tbt_active:
+                    return  # Last prices come from reqTickByTickData
             self._enqueue(self.tick_queue, {
                 "type": "tick_price", "tickType": tickType,
                 "price": price, "ts": time.time(),
+            })
+
+    def tickByTickAllLast(self, reqId: int, tickType: int, time_: int, price: float,
+                          size, tickAttribLast, exchange: str, specialConditions: str):
+        if price > 0:
+            self.last_price = price
+            self._enqueue(self.tick_queue, {
+                "type": "tick_price", "tickType": config.TICK_LAST,
+                "price": price, "ts": float(time_),
             })
 
     # --- Account summary ---

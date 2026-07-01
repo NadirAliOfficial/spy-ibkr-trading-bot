@@ -1,4 +1,6 @@
 import logging
+import os
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -10,6 +12,35 @@ from market import Candle, CandleRecord
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
+
+_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "spy_bot.log")
+
+
+_CRITICAL_CODES = {201, 202, 502, 504, 1100, 1300, 2110}
+_CODE_RE = re.compile(r"code=(\d+):")
+
+
+def scan_log_events(log_path: str = _LOG_PATH) -> tuple[int, int]:
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    abnormal = 0
+    errors = 0
+    try:
+        with open(log_path) as f:
+            for line in f:
+                if not line.startswith(today):
+                    continue
+                if "[ERROR]" in line:
+                    m = _CODE_RE.search(line)
+                    if m:
+                        if int(m.group(1)) in _CRITICAL_CODES:
+                            errors += 1
+                    else:
+                        errors += 1  # no code = non-gateway error (e.g. email failure)
+                if "10am pnl exit" in line or "1-second exit" in line:
+                    abnormal += 1
+    except FileNotFoundError:
+        pass
+    return abnormal, errors
 
 
 def _fmt_time(ts: float) -> str:
@@ -60,8 +91,17 @@ def _build_data(sim_records: list[CandleRecord], candles: list[Candle]):
     return rows, mean, total_oc_lt5
 
 
-def generate_report(sim_records: list[CandleRecord], candles: list[Candle]) -> str:
+def generate_report(sim_records: list[CandleRecord], candles: list[Candle],
+                    abnormal_exits: int | None = None, script_errors: int | None = None,
+                    total_bought: int = 0, total_sold: int = 0) -> str:
     rows, mean, total_oc_lt5 = _build_data(sim_records, candles)
+
+    if abnormal_exits is None or script_errors is None:
+        _ab, _err = scan_log_events()
+        if abnormal_exits is None:
+            abnormal_exits = _ab
+        if script_errors is None:
+            script_errors = _err
 
     lines = ["SPY Bot — Post-Trade Report", ""]
 
@@ -85,10 +125,17 @@ def generate_report(sim_records: list[CandleRecord], candles: list[Candle]) -> s
     if total_oc_lt5 is not None:
         lines.append(f"Total Open-Close points from candles with < 5 Stop Loss Triggers = {total_oc_lt5}")
 
+    lines.append(f"\nTotal SPY Bought = {total_bought}")
+    lines.append(f"Total SPY Sold = {total_sold}")
+    lines.append(f"\nAbnormal Exits = {abnormal_exits}")
+    lines.append(f"Script Errors = {script_errors}")
+
     return "\n".join(lines)
 
 
-def _generate_html(sim_records: list[CandleRecord], candles: list[Candle]) -> str:
+def _generate_html(sim_records: list[CandleRecord], candles: list[Candle],
+                   abnormal_exits: int = 0, script_errors: int = 0,
+                   total_bought: int = 0, total_sold: int = 0) -> str:
     rows, mean, total_oc_lt5 = _build_data(sim_records, candles)
 
     th = "border:1px solid #ccc;padding:8px 12px;text-align:right;font-weight:normal;"
@@ -138,6 +185,10 @@ def _generate_html(sim_records: list[CandleRecord], candles: list[Candle]) -> st
   </table>'''}
   {mean_line}
   {total_line}
+  <p style="font-size:15px;margin-top:16px;"><strong>Total SPY Bought</strong> = {total_bought}</p>
+  <p style="font-size:15px;margin-top:4px;"><strong>Total SPY Sold</strong> = {total_sold}</p>
+  <p style="font-size:15px;margin-top:16px;"><strong>Abnormal Exits</strong> = {abnormal_exits}</p>
+  <p style="font-size:15px;margin-top:4px;"><strong>Script Errors</strong> = {script_errors}</p>
 </div>
 """
 
@@ -149,7 +200,8 @@ def save_report(report: str, path: str = "post_trade_report.txt"):
 
 
 def email_report(sim_records: list[CandleRecord], candles: list[Candle],
-                 subject: str = "SPY Bot — Post-Trade Report"):
+                 subject: str = "SPY Bot — Post-Trade Report",
+                 total_bought: int = 0, total_sold: int = 0):
     api_key = config.RESEND_API_KEY
     to_addr = config.REPORT_EMAIL_TO
 
@@ -158,13 +210,14 @@ def email_report(sim_records: list[CandleRecord], candles: list[Candle],
         return
 
     resend.api_key = api_key
+    abnormal_exits, script_errors = scan_log_events()
     try:
         resend.Emails.send({
             "from": "SPY Bot <onboarding@resend.dev>",
             "to": [to_addr],
             "subject": subject,
-            "html": _generate_html(sim_records, candles),
-            "text": generate_report(sim_records, candles),
+            "html": _generate_html(sim_records, candles, abnormal_exits, script_errors, total_bought, total_sold),
+            "text": generate_report(sim_records, candles, abnormal_exits, script_errors, total_bought, total_sold),
         })
         logger.info("Report emailed to %s", to_addr)
     except Exception as e:
