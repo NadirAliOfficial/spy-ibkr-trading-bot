@@ -42,6 +42,7 @@ class IBApp(EWrapper, EClient):
         self._open_orders_future: asyncio.Future | None = None
         self._open_spy_order_ids: list[int] = []
         self._collecting_open_orders: bool = False
+        self._fill_cum: dict[int, tuple[int, float]] = {}  # orderId → (cumQty, avgPrice)
 
         self.equity_with_loan: float = 0.0
         self.prev_day_elv: float = 0.0
@@ -272,10 +273,18 @@ class IBApp(EWrapper, EClient):
         return await self._fetch_margin_per_share("BUY", qty)
 
     def execDetails(self, reqId: int, contract, execution):
-        self._enqueue(self.order_queue, {
-            "type": "exec", "orderId": execution.orderId,
-            "shares": execution.shares, "price": execution.price,
-        })
+        oid = execution.orderId
+        prev_cum, _ = self._fill_cum.get(oid, (0, 0.0))
+        cum_qty = int(execution.cumQty)
+        avg_price = execution.avgPrice
+        self._fill_cum[oid] = (cum_qty, avg_price)
+        new_qty = cum_qty - prev_cum  # shares added by this partial fill
+        if new_qty > 0:
+            self._enqueue(self.order_queue, {
+                "type": "exec", "orderId": oid,
+                "shares": new_qty, "price": avg_price,
+                "cumQty": cum_qty,
+            })
 
     # --- PnL (account-level) ---
 

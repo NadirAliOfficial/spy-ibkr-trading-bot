@@ -39,6 +39,8 @@ def _base(action: str, qty: int, transmit: bool) -> Order:
     o.tif = "DAY"
     o.eTradeOnly = False
     o.firmQuoteOnly = False
+    o.sweepToFill = True
+    o.overridePercentageConstraints = True
     if _ACCOUNT:
         o.account = _ACCOUNT
     return o
