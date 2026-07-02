@@ -209,6 +209,26 @@ async def trading_window_report_task(sim_sl: SimStopLoss, candles: CandleBuilder
     logger.info("Trading window report emailed (9:30am-%d:%02d)", config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
 
 
+async def ten_thirty_report_task(sim_sl: SimStopLoss, candles: CandleBuilder, order_mgr: OrderManager):
+    target = et_time(10, 30)  # fires at 10:30am ET
+    wait = (target - now_et()).total_seconds()
+    if wait <= 0:
+        return
+    await asyncio.sleep(wait)
+    sim_sl.finalize()
+    open_ts = et_time(config.OPEN_HOUR, config.OPEN_MIN).timestamp()
+    close_ts = target.timestamp()
+    window_candles = [c for c in candles.history if open_ts <= c.minute_ts < close_ts]
+    report = generate_report(sim_sl.records, window_candles,
+                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+    print(report)
+    save_report(report, "post_trade_report_1030.txt")
+    email_report(sim_sl.records, window_candles,
+                 subject="SPY Bot — Post-Trade Report (9:30am–10:30am)",
+                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+    logger.info("10:30am report emailed (9:30am-10:30am)")
+
+
 async def ten_am_pnl_task(order_mgr: OrderManager, risk_mgr: RiskManager):
     target = et_time(10, 0)
     wait = (target - now_et()).total_seconds()
@@ -372,6 +392,7 @@ async def run():
         tick_loop(app, candles, sim_sl_one, sim_sl_two, order_mgr, risk_mgr, session_end),
         order_loop(app, order_mgr, risk_mgr),
         trading_window_report_task(sim_sl_one, candles, order_mgr),
+        ten_thirty_report_task(sim_sl_one, candles, order_mgr),
         am_report_task(sim_sl_one, candles, order_mgr),
         pm_report_task(sim_sl_two, candles, order_mgr),
         ten_am_pnl_task(order_mgr, risk_mgr),
