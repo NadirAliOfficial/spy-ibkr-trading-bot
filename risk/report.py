@@ -94,7 +94,8 @@ def _build_data(sim_records: list[CandleRecord], candles: list[Candle]):
 def generate_report(sim_records: list[CandleRecord], candles: list[Candle],
                     abnormal_exits: int | None = None, script_errors: int | None = None,
                     total_bought: int = 0, total_sold: int = 0,
-                    mean_slippage: float | None = None) -> str:
+                    mean_slippage: float | None = None,
+                    total_executed_orders: int = 0, total_slippage: float = 0.0) -> str:
     rows, mean, total_oc_lt5 = _build_data(sim_records, candles)
 
     if abnormal_exits is None or script_errors is None:
@@ -130,6 +131,8 @@ def generate_report(sim_records: list[CandleRecord], candles: list[Candle],
     lines.append(f"Total SPY Sold = {total_sold}")
     slip_str = f"{mean_slippage:.4f}" if mean_slippage is not None else "N/A"
     lines.append(f"Mean Slippage = {slip_str}")
+    lines.append(f"Total Executed Orders = {total_executed_orders}")
+    lines.append(f"Total Slippage = {total_slippage:.4f}")
     lines.append(f"\nAbnormal Exits = {abnormal_exits}")
     lines.append(f"Script Errors = {script_errors}")
 
@@ -139,7 +142,8 @@ def generate_report(sim_records: list[CandleRecord], candles: list[Candle],
 def _generate_html(sim_records: list[CandleRecord], candles: list[Candle],
                    abnormal_exits: int = 0, script_errors: int = 0,
                    total_bought: int = 0, total_sold: int = 0,
-                   mean_slippage: float | None = None) -> str:
+                   mean_slippage: float | None = None,
+                   total_executed_orders: int = 0, total_slippage: float = 0.0) -> str:
     rows, mean, total_oc_lt5 = _build_data(sim_records, candles)
 
     th = "border:1px solid #ccc;padding:8px 12px;text-align:right;font-weight:normal;"
@@ -192,6 +196,8 @@ def _generate_html(sim_records: list[CandleRecord], candles: list[Candle],
   <p style="font-size:15px;margin-top:16px;"><strong>Total SPY Bought</strong> = {total_bought}</p>
   <p style="font-size:15px;margin-top:4px;"><strong>Total SPY Sold</strong> = {total_sold}</p>
   <p style="font-size:15px;margin-top:4px;"><strong>Mean Slippage</strong> = {f"{mean_slippage:.4f}" if mean_slippage is not None else "N/A"}</p>
+  <p style="font-size:15px;margin-top:4px;"><strong>Total Executed Orders</strong> = {total_executed_orders}</p>
+  <p style="font-size:15px;margin-top:4px;"><strong>Total Slippage</strong> = {total_slippage:.4f}</p>
   <p style="font-size:15px;margin-top:16px;"><strong>Abnormal Exits</strong> = {abnormal_exits}</p>
   <p style="font-size:15px;margin-top:4px;"><strong>Script Errors</strong> = {script_errors}</p>
 </div>
@@ -207,7 +213,8 @@ def save_report(report: str, path: str = "post_trade_report.txt"):
 def email_report(sim_records: list[CandleRecord], candles: list[Candle],
                  subject: str = "SPY Bot — Post-Trade Report",
                  total_bought: int = 0, total_sold: int = 0,
-                 mean_slippage: float | None = None):
+                 mean_slippage: float | None = None,
+                 total_executed_orders: int = 0, total_slippage: float = 0.0):
     api_key = config.RESEND_API_KEY
     to_addr = config.REPORT_EMAIL_TO
 
@@ -222,8 +229,8 @@ def email_report(sim_records: list[CandleRecord], candles: list[Candle],
             "from": "SPY Bot <onboarding@resend.dev>",
             "to": [to_addr],
             "subject": subject,
-            "html": _generate_html(sim_records, candles, abnormal_exits, script_errors, total_bought, total_sold, mean_slippage),
-            "text": generate_report(sim_records, candles, abnormal_exits, script_errors, total_bought, total_sold, mean_slippage),
+            "html": _generate_html(sim_records, candles, abnormal_exits, script_errors, total_bought, total_sold, mean_slippage, total_executed_orders, total_slippage),
+            "text": generate_report(sim_records, candles, abnormal_exits, script_errors, total_bought, total_sold, mean_slippage, total_executed_orders, total_slippage),
         })
         logger.info("Report emailed to %s", to_addr)
     except Exception as e:

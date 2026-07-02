@@ -161,13 +161,17 @@ async def am_report_task(sim_sl_one: SimStopLoss, candles: CandleBuilder, order_
     am_candles = [c for c in candles.history if c.minute_ts < target.timestamp()]
     report = generate_report(sim_sl_one.records, am_candles,
                              total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
-                             mean_slippage=order_mgr.mean_slippage)
+                             mean_slippage=order_mgr.mean_slippage,
+                             total_executed_orders=order_mgr.total_executed_orders,
+                             total_slippage=order_mgr.total_slippage)
     print(report)
     save_report(report, "post_trade_report_am.txt")
     email_report(sim_sl_one.records, am_candles,
                  subject="SPY Bot — Post-Trade Report (9:30am–12:30pm)",
                  total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
-                             mean_slippage=order_mgr.mean_slippage)
+                             mean_slippage=order_mgr.mean_slippage,
+                             total_executed_orders=order_mgr.total_executed_orders,
+                             total_slippage=order_mgr.total_slippage)
     logger.info("AM report emailed (9:30am-12:30pm)")
 
 
@@ -183,13 +187,17 @@ async def pm_report_task(sim_sl_two: SimStopLoss, candles: CandleBuilder, order_
     pm_candles = [c for c in candles.history if c.minute_ts >= noon_ts]
     report = generate_report(sim_sl_two.records, pm_candles,
                              total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
-                             mean_slippage=order_mgr.mean_slippage)
+                             mean_slippage=order_mgr.mean_slippage,
+                             total_executed_orders=order_mgr.total_executed_orders,
+                             total_slippage=order_mgr.total_slippage)
     print(report)
     save_report(report, "post_trade_report_pm.txt")
     email_report(sim_sl_two.records, pm_candles,
                  subject="SPY Bot — Post-Trade Report (12:30pm–4:00pm)",
                  total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
-                             mean_slippage=order_mgr.mean_slippage)
+                             mean_slippage=order_mgr.mean_slippage,
+                             total_executed_orders=order_mgr.total_executed_orders,
+                             total_slippage=order_mgr.total_slippage)
     logger.info("PM report emailed (12:30pm-4pm)")
 
 
@@ -205,13 +213,17 @@ async def trading_window_report_task(sim_sl: SimStopLoss, candles: CandleBuilder
     window_candles = [c for c in candles.history if open_ts <= c.minute_ts < close_ts]
     report = generate_report(sim_sl.records, window_candles,
                              total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
-                             mean_slippage=order_mgr.mean_slippage)
+                             mean_slippage=order_mgr.mean_slippage,
+                             total_executed_orders=order_mgr.total_executed_orders,
+                             total_slippage=order_mgr.total_slippage)
     print(report)
     save_report(report, "post_trade_report_trading.txt")
     email_report(sim_sl.records, window_candles,
                  subject="SPY Bot — Trading Window Report (9:30am–10:00am)",
                  total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
-                             mean_slippage=order_mgr.mean_slippage)
+                             mean_slippage=order_mgr.mean_slippage,
+                             total_executed_orders=order_mgr.total_executed_orders,
+                             total_slippage=order_mgr.total_slippage)
     logger.info("Trading window report emailed (9:30am-%d:%02d)", config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
 
 
@@ -227,13 +239,17 @@ async def ten_thirty_report_task(sim_sl: SimStopLoss, candles: CandleBuilder, or
     window_candles = [c for c in candles.history if open_ts <= c.minute_ts < close_ts]
     report = generate_report(sim_sl.records, window_candles,
                              total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
-                             mean_slippage=order_mgr.mean_slippage)
+                             mean_slippage=order_mgr.mean_slippage,
+                             total_executed_orders=order_mgr.total_executed_orders,
+                             total_slippage=order_mgr.total_slippage)
     print(report)
     save_report(report, "post_trade_report_1030.txt")
     email_report(sim_sl.records, window_candles,
                  subject="SPY Bot — Post-Trade Report (9:30am–10:30am)",
                  total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
-                             mean_slippage=order_mgr.mean_slippage)
+                             mean_slippage=order_mgr.mean_slippage,
+                             total_executed_orders=order_mgr.total_executed_orders,
+                             total_slippage=order_mgr.total_slippage)
     logger.info("10:30am report emailed (9:30am-10:30am)")
 
 
@@ -328,6 +344,21 @@ async def run():
 
     if STOP_FLAG.exists():
         STOP_FLAG.unlink()
+
+    # Pre-open position check
+    app._positions = []
+    app._positions_future = loop.create_future()
+    app.reqPositions()
+    try:
+        pre_positions = await asyncio.wait_for(app._positions_future, timeout=10)
+    except asyncio.TimeoutError:
+        pre_positions = []
+    app.cancelPositions()
+    if pre_positions:
+        logger.warning("Pre-open: %d open SPY position(s) found — closing now", len(pre_positions))
+    else:
+        logger.info("Pre-open position check: account is FLAT — no open positions")
+
     await app.clean_slate()
     await asyncio.sleep(2)
 

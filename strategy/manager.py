@@ -56,6 +56,14 @@ class OrderManager:
     def mean_slippage(self) -> float | None:
         return round(sum(self._slippage) / len(self._slippage), 4) if self._slippage else None
 
+    @property
+    def total_executed_orders(self) -> int:
+        return len(self._slippage)
+
+    @property
+    def total_slippage(self) -> float:
+        return round(sum(self._slippage), 4)
+
     # ── Candle lifecycle ──────────────────────────────────────────────────
 
     async def on_candle_open(self, open_price: float):
