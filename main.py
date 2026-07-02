@@ -160,12 +160,14 @@ async def am_report_task(sim_sl_one: SimStopLoss, candles: CandleBuilder, order_
     sim_sl_one.finalize()
     am_candles = [c for c in candles.history if c.minute_ts < target.timestamp()]
     report = generate_report(sim_sl_one.records, am_candles,
-                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
+                             mean_slippage=order_mgr.mean_slippage)
     print(report)
     save_report(report, "post_trade_report_am.txt")
     email_report(sim_sl_one.records, am_candles,
                  subject="SPY Bot — Post-Trade Report (9:30am–12:30pm)",
-                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
+                             mean_slippage=order_mgr.mean_slippage)
     logger.info("AM report emailed (9:30am-12:30pm)")
 
 
@@ -180,12 +182,14 @@ async def pm_report_task(sim_sl_two: SimStopLoss, candles: CandleBuilder, order_
     noon_ts = et_time(config.SIM_SL_END_HOUR, config.SIM_SL_END_MIN).timestamp()
     pm_candles = [c for c in candles.history if c.minute_ts >= noon_ts]
     report = generate_report(sim_sl_two.records, pm_candles,
-                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
+                             mean_slippage=order_mgr.mean_slippage)
     print(report)
     save_report(report, "post_trade_report_pm.txt")
     email_report(sim_sl_two.records, pm_candles,
                  subject="SPY Bot — Post-Trade Report (12:30pm–4:00pm)",
-                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
+                             mean_slippage=order_mgr.mean_slippage)
     logger.info("PM report emailed (12:30pm-4pm)")
 
 
@@ -200,12 +204,14 @@ async def trading_window_report_task(sim_sl: SimStopLoss, candles: CandleBuilder
     close_ts = target.timestamp()
     window_candles = [c for c in candles.history if open_ts <= c.minute_ts < close_ts]
     report = generate_report(sim_sl.records, window_candles,
-                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
+                             mean_slippage=order_mgr.mean_slippage)
     print(report)
     save_report(report, "post_trade_report_trading.txt")
     email_report(sim_sl.records, window_candles,
                  subject="SPY Bot — Trading Window Report (9:30am–10:00am)",
-                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
+                             mean_slippage=order_mgr.mean_slippage)
     logger.info("Trading window report emailed (9:30am-%d:%02d)", config.EOD_EXIT_HOUR, config.EOD_EXIT_MIN)
 
 
@@ -220,12 +226,14 @@ async def ten_thirty_report_task(sim_sl: SimStopLoss, candles: CandleBuilder, or
     close_ts = target.timestamp()
     window_candles = [c for c in candles.history if open_ts <= c.minute_ts < close_ts]
     report = generate_report(sim_sl.records, window_candles,
-                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+                             total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
+                             mean_slippage=order_mgr.mean_slippage)
     print(report)
     save_report(report, "post_trade_report_1030.txt")
     email_report(sim_sl.records, window_candles,
                  subject="SPY Bot — Post-Trade Report (9:30am–10:30am)",
-                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold)
+                 total_bought=order_mgr.total_bought, total_sold=order_mgr.total_sold,
+                             mean_slippage=order_mgr.mean_slippage)
     logger.info("10:30am report emailed (9:30am-10:30am)")
 
 

@@ -47,9 +47,14 @@ class OrderManager:
 
         self.total_bought: int = 0
         self.total_sold: int = 0
+        self._slippage: list[float] = []
 
         self.last_bid: float = 0.0
         self.last_ask: float = 0.0
+
+    @property
+    def mean_slippage(self) -> float | None:
+        return round(sum(self._slippage) / len(self._slippage), 4) if self._slippage else None
 
     # ── Candle lifecycle ──────────────────────────────────────────────────
 
@@ -171,6 +176,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_bought += 1
+        self._slippage.append(abs(fill_price - _rp(self._open + 0.01)))
         logger.info("Y LONG parent filled @ %.2f (entry#%d)", fill_price, self._entries)
 
     async def _on_z_parent_filled(self, fill_price: float):
@@ -181,6 +187,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_sold += 1
+        self._slippage.append(abs(fill_price - _rp(self._open - 0.01)))
         logger.info("Z SHORT parent filled @ %.2f (entry#%d)", fill_price, self._entries)
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
@@ -193,6 +200,7 @@ class OrderManager:
         old_qty = self._pos_qty  # save before reset — reverse opens same qty
 
         self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
+        self._slippage.append(abs(fill_price - self._s3_px))
         if was_long:
             self.total_sold += self._s3_qty
         else:
