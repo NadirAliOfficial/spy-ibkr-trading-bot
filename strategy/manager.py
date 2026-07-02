@@ -44,6 +44,7 @@ class OrderManager:
 
         self._sl_count: int = 0
         self._sl_sec: int = -1
+        self._tp_count: int = 0         # take-profit exits this candle (cap 2)
 
         self.total_bought: int = 0
         self.total_sold: int = 0
@@ -73,6 +74,7 @@ class OrderManager:
         self._pending = False
         self._sl_count = 0
         self._sl_sec = -1
+        self._tp_count = 0
         logger.info("Candle open: %.2f", open_price)
         if self._pos == Side.FLAT:
             await self._place_yz()
@@ -103,7 +105,8 @@ class OrderManager:
             await self._manage_short(price)
         elif (self._pos == Side.FLAT and
               not self._pending and
-              self._entries < config.MAX_ENTRIES_PER_CANDLE):
+              self._entries < config.MAX_ENTRIES_PER_CANDLE and
+              self._tp_count < 2):
             await self._place_yz()
 
     # ── Fill routing ──────────────────────────────────────────────────────
@@ -171,6 +174,10 @@ class OrderManager:
         trade_pnl = round(pnl_sh * (qty or self._pos_qty), 2)
         self._bot_realized = round(self._bot_realized + trade_pnl, 2)
         kind = "TAKE PROFIT" if pnl_sh >= 0 else "STOP LOSS"
+        if pnl_sh >= 0:
+            self._tp_count += 1
+            if self._tp_count >= 2:
+                logger.info("TP limit 2/candle reached — no re-entry this candle")
         logger.info("EXEC %s | open=%.2f fill=%.2f exit=%.2f | %s (%s) | trade=%.2f botPnL=%.2f",
                     side.name, self._open, entry, exit_px, kind, reason, trade_pnl, self._bot_realized)
 
@@ -277,7 +284,7 @@ class OrderManager:
     # ── Order placement ───────────────────────────────────────────────────
 
     async def _place_yz(self):
-        if self._entries >= config.MAX_ENTRIES_PER_CANDLE or self._halted:
+        if self._entries >= config.MAX_ENTRIES_PER_CANDLE or self._halted or self._tp_count >= 2:
             return
 
         if self._entries > 0:
