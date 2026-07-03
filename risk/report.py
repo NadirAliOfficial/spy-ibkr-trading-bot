@@ -25,7 +25,7 @@ def scan_log_events(log_path: str = _LOG_PATH) -> tuple[int, int]:
     abnormal = 0
     errors = 0
     try:
-        with open(log_path) as f:
+        with open(log_path, encoding="utf-8") as f:
             for line in f:
                 if not line.startswith(today):
                     continue
