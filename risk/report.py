@@ -80,7 +80,7 @@ def _build_data(sim_records: list[CandleRecord], candles: list[Candle]):
 
         oc_sum = sum(
             abs(candle_close.get(r.minute_ts, r.open_price) - r.open_price)
-            for r in sim_records if r.sim_sl_hits < 5
+            for r in sim_records if r.sim_sl_hits < 4
         )
         total_oc_lt5 = round(oc_sum, 2)
 
@@ -125,7 +125,7 @@ def generate_report(sim_records: list[CandleRecord], candles: list[Candle],
         lines.append(f"\nMean Open-Close per 1-minute candle = {mean:.2f}")
 
     if total_oc_lt5 is not None:
-        lines.append(f"Total Open-Close points from candles with < 5 Stop Loss Triggers = {total_oc_lt5}")
+        lines.append(f"Total Open-Close points from candles with < 4 Stop Loss Triggers = {total_oc_lt5}")
 
     lines.append(f"\nTotal SPY Bought = {total_bought}")
     lines.append(f"Total SPY Sold = {total_sold}")
@@ -169,7 +169,7 @@ def _generate_html(sim_records: list[CandleRecord], candles: list[Candle],
 
     total_line = (
         f"<p style='font-size:15px;margin-top:8px;'>"
-        f"Total Open-Close points from candles with &lt; 5 Stop Loss Triggers = {total_oc_lt5}</p>"
+        f"Total Open-Close points from candles with &lt; 4 Stop Loss Triggers = {total_oc_lt5}</p>"
         if total_oc_lt5 is not None else ""
     )
 
