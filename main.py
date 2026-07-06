@@ -324,19 +324,23 @@ async def wait_until(hour: int, minute: int, label: str):
 async def status_writer(app, candles: CandleBuilder, order_mgr: OrderManager,
                         risk_mgr: RiskManager):
     while not risk_mgr.done:
-        om = order_mgr
+        ep = 0.0
+        if order_mgr._pos.name == "LONG" and order_mgr._y:
+            ep = order_mgr._y.entry_price
+        elif order_mgr._pos.name == "SHORT" and order_mgr._z:
+            ep = order_mgr._z.entry_price
         _write_status(
             status="running",
             account=app.account,
-            elv=om.current_elv if hasattr(om, "current_elv") else app.equity_with_loan,
-            leg_qty=om.leg_qty,
-            candle_open=candles.current_open if hasattr(candles, "current_open") else 0.0,
-            entries=om._entries if hasattr(om, "_entries") else 0,
-            position=om._pos.name if hasattr(om, "_pos") else "FLAT",
-            entry_price=om._entry_price if hasattr(om, "_entry_price") else 0.0,
-            pos_qty=om._pos_qty if hasattr(om, "_pos_qty") else 0,
+            elv=app.equity_with_loan,
+            leg_qty=order_mgr._leg,
+            candle_open=candles.history[-1].open if candles.history else 0.0,
+            entries=order_mgr._entries,
+            position=order_mgr._pos.name,
+            entry_price=ep,
+            pos_qty=order_mgr._pos_qty,
             daily_pnl=app.equity_with_loan - app.prev_day_elv if app.prev_day_elv > 0 else 0.0,
-            bot_pnl=om.realized_pnl if hasattr(om, "realized_pnl") else 0.0,
+            bot_pnl=order_mgr._bot_realized,
         )
         await asyncio.sleep(5)
     _write_status("ended", account=app.account)
