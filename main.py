@@ -6,7 +6,6 @@ _log_fd = _os.open(
 _os.dup2(_log_fd, 1)
 _os.dup2(_log_fd, 2)
 _os.close(_log_fd)
-_os.write(1, b"[BOOT] stdout redirected to log\n")
 del _log_fd, _os
 
 import asyncio
