@@ -1,3 +1,13 @@
+import os as _os
+_log_fd = _os.open(
+    _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "spy_bot.log"),
+    _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND, 0o644,
+)
+_os.dup2(_log_fd, 1)
+_os.dup2(_log_fd, 2)
+_os.close(_log_fd)
+del _log_fd, _os
+
 import asyncio
 import json
 import logging
@@ -323,14 +333,15 @@ async def wait_until(hour: int, minute: int, label: str):
 
 async def status_writer(app, candles: CandleBuilder, order_mgr: OrderManager,
                         risk_mgr: RiskManager):
-    while not risk_mgr.done:
+    while True:
         ep = 0.0
         if order_mgr._pos.name == "LONG" and order_mgr._y:
             ep = order_mgr._y.entry_price
         elif order_mgr._pos.name == "SHORT" and order_mgr._z:
             ep = order_mgr._z.entry_price
+        st = "ended" if risk_mgr.done else "running"
         _write_status(
-            status="running",
+            status=st,
             account=app.account,
             elv=app.equity_with_loan,
             leg_qty=order_mgr._leg,
@@ -342,8 +353,9 @@ async def status_writer(app, candles: CandleBuilder, order_mgr: OrderManager,
             daily_pnl=app.equity_with_loan - app.prev_day_elv if app.prev_day_elv > 0 else 0.0,
             bot_pnl=order_mgr._bot_realized,
         )
+        if risk_mgr.done:
+            break
         await asyncio.sleep(5)
-    _write_status("ended", account=app.account)
 
 
 async def run():
