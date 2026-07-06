@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
 import signal
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -22,8 +24,24 @@ logger = logging.getLogger("main")
 
 # Marks the day as finished so a mid-session restart does not re-enter trading
 # after a terminal exit (12:30pm exit, hard SL, TP, or EOD). No re-entry.
-STATE_FILE = Path(__file__).parent / "day_state.txt"
-STOP_FLAG  = Path(__file__).parent / "bot_stop.txt"
+STATE_FILE  = Path(__file__).parent / "day_state.txt"
+STOP_FLAG   = Path(__file__).parent / "bot_stop.txt"
+STATUS_FILE = Path(__file__).parent / "bot_status.json"
+
+
+def _write_status(status: str, account: str = "", elv: float = 0.0,
+                  leg_qty: int = 0, candle_open: float = 0.0, entries: int = 0,
+                  position: str = "FLAT", entry_price: float = 0.0,
+                  pos_qty: int = 0, daily_pnl: float = 0.0, bot_pnl: float = 0.0):
+    try:
+        STATUS_FILE.write_text(json.dumps({
+            "ts": time.time(), "status": status, "account": account,
+            "elv": elv, "leg_qty": leg_qty, "candle_open": candle_open,
+            "entries": entries, "position": position, "entry_price": entry_price,
+            "pos_qty": pos_qty, "daily_pnl": daily_pnl, "bot_pnl": bot_pnl,
+        }))
+    except Exception:
+        pass
 
 
 def _today_str() -> str:
@@ -303,7 +321,35 @@ async def wait_until(hour: int, minute: int, label: str):
         await asyncio.sleep(secs)
 
 
+async def status_writer(app, candles: CandleBuilder, order_mgr: OrderManager,
+                        risk_mgr: RiskManager):
+    while not risk_mgr.done:
+        om = order_mgr
+        _write_status(
+            status="running",
+            account=app.account,
+            elv=om.current_elv if hasattr(om, "current_elv") else app.equity_with_loan,
+            leg_qty=om.leg_qty,
+            candle_open=candles.current_open if hasattr(candles, "current_open") else 0.0,
+            entries=om._entries if hasattr(om, "_entries") else 0,
+            position=om._pos.name if hasattr(om, "_pos") else "FLAT",
+            entry_price=om._entry_price if hasattr(om, "_entry_price") else 0.0,
+            pos_qty=om._pos_qty if hasattr(om, "_pos_qty") else 0,
+            daily_pnl=app.equity_with_loan - app.prev_day_elv if app.prev_day_elv > 0 else 0.0,
+            bot_pnl=om.realized_pnl if hasattr(om, "realized_pnl") else 0.0,
+        )
+        await asyncio.sleep(5)
+    _write_status("ended", account=app.account)
+
+
 async def run():
+    # Attach FileHandler now — all module-level fd activity is complete,
+    # so the handler gets a stable descriptor that nothing will close.
+    _log_path = Path(__file__).parent / "spy_bot.log"
+    _fh = logging.FileHandler(_log_path, mode="a", encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logging.getLogger().addHandler(_fh)
+
     # If restarted after market close OR the day already finished (terminal
     # exit), sleep until tomorrow's pre-check so we never re-enter the session.
     now = now_et()
@@ -328,6 +374,7 @@ async def run():
     await asyncio.sleep(1)  # let managedAccounts arrive
     set_account(app.account)
     logger.info("Orders target account: %s", app.account)
+    _write_status("waiting", account=app.account)
 
     await wait_until(config.PRE_CHECK_HOUR, config.PRE_CHECK_MIN, "8:25am pre-check")
 
@@ -450,6 +497,7 @@ async def run():
         ten_am_pnl_task(order_mgr, risk_mgr),
         ten_thirty_pnl_task(order_mgr, risk_mgr),
         eod_exit_task(order_mgr, risk_mgr),
+        status_writer(app, candles, order_mgr, risk_mgr),
         return_exceptions=True,
     )
 

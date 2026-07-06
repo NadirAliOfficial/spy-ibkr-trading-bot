@@ -1,11 +1,15 @@
+import json
 import re
 import os
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, render_template_string
 
 app = Flask(__name__)
-LOG_PATH = os.path.join(os.path.dirname(__file__), "spy_bot.log")
+LOG_PATH    = os.path.join(os.path.dirname(__file__), "spy_bot.log")
+STATUS_PATH = os.path.join(os.path.dirname(__file__), "bot_status.json")
+_STATUS_TTL = 30  # seconds — if status file is older than this, bot is offline
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -647,9 +651,43 @@ def index():
 STOP_FLAG = os.path.join(os.path.dirname(__file__), "bot_stop.txt")
 
 
+def _read_status_file():
+    """Read bot_status.json. Returns dict if fresh (< TTL seconds old), else None."""
+    try:
+        data = json.loads(open(STATUS_PATH).read())
+        if time.time() - data.get("ts", 0) < _STATUS_TTL:
+            return data
+    except Exception:
+        pass
+    return None
+
+
 @app.route("/api/state")
 def api_state():
-    return jsonify(parse_log())
+    state = parse_log()
+    sf = _read_status_file()
+    if sf:
+        # Status file is live — override key fields from it
+        state["status"] = sf.get("status", state["status"])
+        if sf.get("account"):
+            state["account"] = sf["account"]
+        if sf.get("elv"):
+            state["elv"] = sf["elv"]
+        if sf.get("leg_qty"):
+            state["leg_qty"] = sf["leg_qty"]
+        if sf.get("candle_open"):
+            state["candle_open"] = sf["candle_open"]
+        state["entries"]     = sf.get("entries", state["entries"])
+        state["position"]    = sf.get("position", state["position"])
+        if sf.get("entry_price"):
+            state["entry_price"] = sf["entry_price"]
+        if sf.get("pos_qty"):
+            state["pos_qty"] = sf["pos_qty"]
+        if sf.get("daily_pnl"):
+            state["daily_pnl"] = sf["daily_pnl"]
+        if sf.get("bot_pnl"):
+            state["bot_pnl"] = sf["bot_pnl"]
+    return jsonify(state)
 
 
 @app.route("/api/stop", methods=["POST"])
