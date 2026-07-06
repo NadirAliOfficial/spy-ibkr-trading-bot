@@ -426,7 +426,7 @@ async function refresh(){
     // stats
     document.getElementById('elv-val').textContent=d.elv?'$'+Number(d.elv).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';
     document.getElementById('open-val').textContent=d.candle_open?'$'+d.candle_open:'--';
-    document.getElementById('entries-sub').textContent=(d.entries||0)+' / 5 entries';
+    document.getElementById('entries-sub').textContent=(d.entries||0)+' / 4 entries';
     document.getElementById('leg-val').textContent=d.leg_qty||'--';
 
     // Account PnL (IBKR daily)
