@@ -365,6 +365,7 @@ async def run():
     _fh = logging.FileHandler(_log_path, mode="a", encoding="utf-8")
     _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     logging.getLogger().addHandler(_fh)
+    _write_status("waiting")
 
     # If restarted after market close OR the day already finished (terminal
     # exit), sleep until tomorrow's pre-check so we never re-enter the session.
