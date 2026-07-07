@@ -119,36 +119,38 @@ class OrderManager:
             self._pos_qty = 0
             return
 
-        # Y parent filled — start LONG position with 1 share, child fills add to it
+        # Y parent first fill — starts LONG position
         if self._y and not self._y.cancelled and not self._y.parent_filled and order_id == self._y.parent_id:
             self._y.parent_filled = True
             self._y.entry_price = fill_price
-            await self._on_y_parent_filled(fill_price)
+            qty = max(1, int(fill_qty)) if fill_qty else 1
+            await self._on_y_parent_filled(fill_price, qty)
             return
 
-        # Y child filled (full or partial exec before cancel)
-        if self._y and self._y.parent_filled and not self._y.filled and order_id == self._y.child_id:
+        # Y parent subsequent partial fills (same STOP order filling in parts)
+        if self._y and self._y.parent_filled and not self._y.filled and order_id == self._y.parent_id:
             qty = max(1, int(fill_qty)) if fill_qty else 1
             self._pos_qty += qty
             self.total_bought += qty
-            logger.info("Y child filled %d shares → total pos=%d", qty, self._pos_qty)
+            logger.info("Y LONG fill +%d shares → total pos=%d", qty, self._pos_qty)
             if self._pos_qty >= self._leg:
                 self._y.filled = True
             return
 
-        # Z parent filled — start SHORT position with 1 share
+        # Z parent first fill — starts SHORT position
         if self._z and not self._z.cancelled and not self._z.parent_filled and order_id == self._z.parent_id:
             self._z.parent_filled = True
             self._z.entry_price = fill_price
-            await self._on_z_parent_filled(fill_price)
+            qty = max(1, int(fill_qty)) if fill_qty else 1
+            await self._on_z_parent_filled(fill_price, qty)
             return
 
-        # Z child filled
-        if self._z and self._z.parent_filled and not self._z.filled and order_id == self._z.child_id:
+        # Z parent subsequent partial fills
+        if self._z and self._z.parent_filled and not self._z.filled and order_id == self._z.parent_id:
             qty = max(1, int(fill_qty)) if fill_qty else 1
             self._pos_qty += qty
             self.total_sold += qty
-            logger.info("Z child filled %d shares → total pos=%d", qty, self._pos_qty)
+            logger.info("Z SHORT fill +%d shares → total pos=%d", qty, self._pos_qty)
             if self._pos_qty >= self._leg:
                 self._z.filled = True
             return
@@ -157,7 +159,7 @@ class OrderManager:
             await self._on_stp3_filled(fill_price)
 
     async def on_partial_fill(self, order_id: int):
-        self._app.cancelOrder(order_id)
+        pass  # let partial fills complete — entry orders fill in parts on large qty
 
     def on_reverse_rejected(self, order_id: int):
         pass
@@ -183,27 +185,31 @@ class OrderManager:
 
     # ── Entry fills ───────────────────────────────────────────────────────
 
-    async def _on_y_parent_filled(self, fill_price: float):
+    async def _on_y_parent_filled(self, fill_price: float, fill_qty: int = 1):
         self._cancel_group(self._z)
         self._pos = Side.LONG
-        self._pos_qty = 1  # parent is 1 share; child fills add to this
+        self._pos_qty = fill_qty
         self._entry_px = fill_price
         self._pending = False
         self._entries += 1
-        self.total_bought += 1
+        self.total_bought += fill_qty
         self._slippage.append(abs(fill_price - _rp(self._open + 0.01)) * self._leg)
-        logger.info("Y LONG parent filled @ %.2f (entry#%d)", fill_price, self._entries)
+        if self._pos_qty >= self._leg:
+            self._y.filled = True
+        logger.info("Y LONG filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
 
-    async def _on_z_parent_filled(self, fill_price: float):
+    async def _on_z_parent_filled(self, fill_price: float, fill_qty: int = 1):
         self._cancel_group(self._y)
         self._pos = Side.SHORT
-        self._pos_qty = 1  # parent is 1 share; child fills add to this
+        self._pos_qty = fill_qty
         self._entry_px = fill_price
         self._pending = False
         self._entries += 1
-        self.total_sold += 1
+        self.total_sold += fill_qty
         self._slippage.append(abs(fill_price - _rp(self._open - 0.01)) * self._leg)
-        logger.info("Z SHORT parent filled @ %.2f (entry#%d)", fill_price, self._entries)
+        if self._pos_qty >= self._leg:
+            self._z.filled = True
+        logger.info("Z SHORT filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
 
@@ -292,23 +298,18 @@ class OrderManager:
             if self._halted or self._entries >= config.MAX_ENTRIES_PER_CANDLE:
                 return
 
-        y_pid, y_cid = self._app.next_id(), self._app.next_id()
-        z_pid, z_cid = self._app.next_id(), self._app.next_id()
+        y_pid = self._app.next_id()
+        z_pid = self._app.next_id()
         buy_px, sell_px = _rp(self._open + 0.01), _rp(self._open - 0.01)
 
-        # OCO removed (NADIR6/7): Y and Z are independent orders.
-        # When one fills, the other is cancelled in code (_on_y_parent_filled / _on_z_parent_filled).
-        # Parent = 1 share STP trigger; child = leg-1 MKT for total leg shares.
-        yp = stp("BUY",  1,             buy_px,  transmit=False);  yp.orderId = y_pid
-        yc = mkt("BUY",  self._leg - 1, y_pid,   transmit=True);   yc.orderId = y_cid
-        zp = stp("SELL", 1,             sell_px, transmit=False);  zp.orderId = z_pid
-        zc = mkt("SELL", self._leg - 1, z_pid,   transmit=True);   zc.orderId = z_cid
+        yp = stp("BUY",  self._leg, buy_px,  transmit=True);  yp.orderId = y_pid
+        zp = stp("SELL", self._leg, sell_px, transmit=True);  zp.orderId = z_pid
 
-        for oid, order in ((y_pid, yp), (y_cid, yc), (z_pid, zp), (z_cid, zc)):
-            self._app.placeOrder(oid, CONTRACT, order)
+        self._app.placeOrder(y_pid, CONTRACT, yp)
+        self._app.placeOrder(z_pid, CONTRACT, zp)
 
-        self._y = OrderGroup(y_pid, y_cid, Side.LONG,  self._leg, entry_price=buy_px)
-        self._z = OrderGroup(z_pid, z_cid, Side.SHORT, self._leg, entry_price=sell_px)
+        self._y = OrderGroup(y_pid, 0, Side.LONG,  self._leg, entry_price=buy_px)
+        self._z = OrderGroup(z_pid, 0, Side.SHORT, self._leg, entry_price=sell_px)
         self._pending = True
         logger.info("Y/Z placed: BUY=%.2f SELL=%.2f (entries so far=%d)", buy_px, sell_px, self._entries)
 
