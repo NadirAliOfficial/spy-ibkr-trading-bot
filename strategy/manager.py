@@ -191,7 +191,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_bought += 1
-        self._slippage.append(abs(fill_price - _rp(self._open + 0.01)))
+        self._slippage.append(abs(fill_price - _rp(self._open + 0.01)) * self._leg)
         logger.info("Y LONG parent filled @ %.2f (entry#%d)", fill_price, self._entries)
 
     async def _on_z_parent_filled(self, fill_price: float):
@@ -202,7 +202,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_sold += 1
-        self._slippage.append(abs(fill_price - _rp(self._open - 0.01)))
+        self._slippage.append(abs(fill_price - _rp(self._open - 0.01)) * self._leg)
         logger.info("Z SHORT parent filled @ %.2f (entry#%d)", fill_price, self._entries)
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
@@ -215,7 +215,7 @@ class OrderManager:
         old_qty = self._pos_qty  # save before reset — reverse opens same qty
 
         self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
-        self._slippage.append(abs(fill_price - self._s3_px))
+        self._slippage.append(abs(fill_price - self._s3_px) * self._leg)
         if was_long:
             self.total_sold += self._s3_qty
         else:
