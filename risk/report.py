@@ -138,7 +138,6 @@ def generate_report(sim_records: list[CandleRecord], candles: list[Candle],
     lines.append(f"Total Executed Orders = {total_executed_orders}")
     lines.append(f"Total Slippage ($) = {total_slippage:.4f}")
     lines.append(f"\nAbnormal Exits = {abnormal_exits}")
-    lines.append(f"Script Errors = {script_errors}")
 
     return "\n".join(lines)
 
@@ -203,7 +202,6 @@ def _generate_html(sim_records: list[CandleRecord], candles: list[Candle],
   <p style="font-size:15px;margin-top:4px;"><strong>Total Executed Orders</strong> = {total_executed_orders}</p>
   <p style="font-size:15px;margin-top:4px;"><strong>Total Slippage ($)</strong> = ${total_slippage:.4f}</p>
   <p style="font-size:15px;margin-top:16px;"><strong>Abnormal Exits</strong> = {abnormal_exits}</p>
-  <p style="font-size:15px;margin-top:4px;"><strong>Script Errors</strong> = {script_errors}</p>
 </div>
 """
 
