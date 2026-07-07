@@ -281,16 +281,6 @@ async def ten_thirty_report_task(sim_sl: SimStopLoss, candles: CandleBuilder, or
     logger.info("10:30am report emailed (9:30am-10:30am)")
 
 
-async def ten_am_pnl_task(order_mgr: OrderManager, risk_mgr: RiskManager):
-    target = et_time(10, 0)
-    wait = (target - now_et()).total_seconds()
-    if wait > 0:
-        await asyncio.sleep(wait)
-    if risk_mgr.check_noon(risk_mgr.current_pnl):
-        logger.warning("10am check: pnl=%.2f < 4.5%% — day done, no re-entry", risk_mgr.current_pnl)
-        await order_mgr.exit_all("10am pnl exit")
-        mark_day_done()
-
 
 async def ten_thirty_pnl_task(order_mgr: OrderManager, risk_mgr: RiskManager):
     target = et_time(10, 30)
@@ -511,7 +501,6 @@ async def run():
         ten_thirty_report_task(sim_sl_one, candles, order_mgr),
         am_report_task(sim_sl_one, candles, order_mgr),
         pm_report_task(sim_sl_two, candles, order_mgr),
-        ten_am_pnl_task(order_mgr, risk_mgr),
         ten_thirty_pnl_task(order_mgr, risk_mgr),
         eod_exit_task(order_mgr, risk_mgr),
         status_writer(app, candles, order_mgr, risk_mgr),
