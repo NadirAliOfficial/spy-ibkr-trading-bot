@@ -16,7 +16,7 @@ ET = ZoneInfo("America/New_York")
 _LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "spy_bot.log")
 
 
-_CRITICAL_CODES = {201, 202, 502, 504, 1100, 1300, 2110}
+_CRITICAL_CODES = {201, 502, 504, 1100, 1300, 2110}
 _CODE_RE = re.compile(r"code=(\d+):")
 
 
@@ -25,10 +25,14 @@ def scan_log_events(log_path: str = _LOG_PATH) -> tuple[int, int]:
     abnormal = 0
     errors = 0
     try:
+        seen = set()
         with open(log_path, encoding="utf-8") as f:
             for line in f:
                 if not line.startswith(today):
                     continue
+                if line in seen:
+                    continue
+                seen.add(line)
                 if "[ERROR]" in line:
                     m = _CODE_RE.search(line)
                     if m:
@@ -36,7 +40,7 @@ def scan_log_events(log_path: str = _LOG_PATH) -> tuple[int, int]:
                             errors += 1
                     else:
                         errors += 1  # no code = non-gateway error (e.g. email failure)
-                if "10am pnl exit" in line or "1-second exit" in line:
+                if "1-second exit" in line:
                     abnormal += 1
     except FileNotFoundError:
         pass
