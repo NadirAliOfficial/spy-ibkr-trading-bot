@@ -220,6 +220,13 @@ class OrderManager:
         logger.info("EXEC %s | open=%.2f fill=%.2f exit=%.2f | %s (%s) | trade=%.2f botPnL=%.2f",
                     side.name, self._open, entry, exit_px, kind, reason, trade_pnl, self._bot_realized)
 
+    def _credit_slippage(self, slip: float):
+        # Client spec: slippage (|fill - target| x order size) is added back as
+        # profit in the strategy PnL for every executed order, so botPnL shows
+        # the strategy's result at target prices.
+        self._slippage.append(slip)
+        self._bot_realized = round(self._bot_realized + slip, 2)
+
     # ── Entry fills ───────────────────────────────────────────────────────
 
     async def _on_y_parent_filled(self, fill_price: float, fill_qty: int = 1):
@@ -230,7 +237,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_bought += fill_qty
-        self._slippage.append(abs(fill_price - _rp(self._open + 0.01)) * self._leg)
+        self._credit_slippage(abs(fill_price - _rp(self._open + 0.01)) * self._leg)
         if self._pos_qty >= self._leg:
             self._y.filled = True
         logger.info("Y LONG filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
@@ -243,7 +250,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_sold += fill_qty
-        self._slippage.append(abs(fill_price - _rp(self._open - 0.01)) * self._leg)
+        self._credit_slippage(abs(fill_price - _rp(self._open - 0.01)) * self._leg)
         if self._pos_qty >= self._leg:
             self._z.filled = True
         logger.info("Z SHORT filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
@@ -282,7 +289,9 @@ class OrderManager:
         s3_px = self._s3_px
 
         self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
-        self._slippage.append(abs(fill_price - s3_px) * self._leg)
+        # order qty (2x leg on reverse) — covers slippage on both the closing
+        # and the opening half of the reverse
+        self._credit_slippage(abs(fill_price - s3_px) * self._s3_qty)
         self._pos, self._pos_qty = Side.FLAT, 0
         logger.info("STP3 triggered @ %.2f (SL/s: %d, reverse=%s)", fill_price, self._sl_count, is_reverse)
 
