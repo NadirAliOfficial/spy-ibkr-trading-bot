@@ -34,6 +34,7 @@ class OrderManager:
         self._s3_qty: int = 0           # total shares in STP3 bracket (parent+child)
         self._s3_reverse: bool = False
         self._placing_stp3: bool = False
+        self._s3_cancel_ts: float = 0.0  # timestamp of last STP3 cancel (prevent race)
 
         self._pos: Side = Side.FLAT
         self._pos_qty: int = 0
@@ -41,6 +42,7 @@ class OrderManager:
         self._bot_realized: float = 0.0   # strategy's own realized P&L (this session)
 
         self._exit_orders: dict[int, tuple] = {}  # oid → (side, entry_px, reason)
+        self._close_order_ids: set[int] = set()  # MKT close orders — 201 here should not halt bot
 
         self._sl_count: int = 0
         self._sl_sec: int = -1
@@ -159,7 +161,11 @@ class OrderManager:
             await self._on_stp3_filled(fill_price)
 
     async def on_partial_fill(self, order_id: int):
-        pass  # let partial fills complete — entry orders fill in parts on large qty
+        if self._s3_cid and order_id == self._s3_cid:
+            self._app.cancelOrder(order_id)  # cancel STP3 child partials to prevent state mismatch
+
+    def is_close_order(self, order_id: int) -> bool:
+        return order_id in self._close_order_ids
 
     def on_reverse_rejected(self, order_id: int):
         pass
@@ -271,6 +277,8 @@ class OrderManager:
             if self._s3_pid:
                 self._cancel_stp3()                  # recovered — cancel stop
         elif price <= arm and not self._s3_pid and not self._placing_stp3:
+            if time.time() - self._s3_cancel_ts < 0.5:  # wait 500ms after cancel before re-arming
+                return
             stop = _rp(price - 0.03)                 # NADIR11: use Last price, not bid
             logger.info("STP3 arm LONG: SPY=%.2f<=Open-0.01=%.2f  stop=last-0.03=%.2f",
                         price, arm, stop)
@@ -282,6 +290,8 @@ class OrderManager:
             if self._s3_pid:
                 self._cancel_stp3()                  # recovered — cancel stop
         elif price >= arm and not self._s3_pid and not self._placing_stp3:
+            if time.time() - self._s3_cancel_ts < 0.5:
+                return
             stop = _rp(price + 0.03)                 # NADIR11: use Last price, not ask
             logger.info("STP3 arm SHORT: SPY=%.2f>=Open+0.01=%.2f  stop=last+0.03=%.2f",
                         price, arm, stop)
@@ -333,6 +343,7 @@ class OrderManager:
             if oid:
                 self._app.cancelOrder(oid)
         self._s3_pid = self._s3_cid = 0
+        self._s3_cancel_ts = time.time()
         self._s3_px = 0.0
         self._s3_reverse = False
         self._placing_stp3 = False
@@ -353,6 +364,7 @@ class OrderManager:
             o.orderId = oid
             self._app.placeOrder(oid, CONTRACT, o)
             self._exit_orders[oid] = (self._pos, self._entry_px, self._pos_qty, reason or "exit all")
+            self._close_order_ids.add(oid)
             if action == "SELL":
                 self.total_sold += self._pos_qty
             else:

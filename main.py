@@ -152,9 +152,13 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
 
         elif etype == "error":
             if event.get("code") == 201:
-                logger.warning("Order rejected (201) — stopping bot immediately per client directive")
-                risk_mgr.done = True
-                await order_mgr.exit_all("order rejected 201")
+                oid = event.get("reqId", -1)
+                if order_mgr.is_close_order(oid):
+                    logger.warning("Close order %d rejected (201) — position may need manual close, continuing", oid)
+                else:
+                    logger.warning("Entry order rejected (201) — stopping bot immediately per client directive")
+                    risk_mgr.done = True
+                    await order_mgr.exit_all("order rejected 201")
 
         elif etype == "pnl":
             daily_pnl = event["dailyPnL"]
