@@ -195,7 +195,7 @@ class OrderManager:
         self._cancel_group(self._z)
         self._pos = Side.LONG
         self._pos_qty = fill_qty
-        self._entry_px = _rp(self._open + 0.01)  # target price, not fill (no slippage in strategy PnL)
+        self._entry_px = fill_price  # actual fill price — slippage naturally in strategy PnL
         self._pending = False
         self._entries += 1
         self.total_bought += fill_qty
@@ -208,7 +208,7 @@ class OrderManager:
         self._cancel_group(self._y)
         self._pos = Side.SHORT
         self._pos_qty = fill_qty
-        self._entry_px = _rp(self._open - 0.01)  # target price, not fill (no slippage in strategy PnL)
+        self._entry_px = fill_price  # actual fill price — slippage naturally in strategy PnL
         self._pending = False
         self._entries += 1
         self.total_sold += fill_qty
@@ -227,7 +227,7 @@ class OrderManager:
         old_qty = self._pos_qty
         s3_px = self._s3_px  # save before clearing — used for PnL and reverse entry_px
 
-        self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, s3_px, "STP3")
+        self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
         self._slippage.append(abs(fill_price - s3_px) * self._leg)
         if was_long:
             self.total_sold += fill_qty
@@ -264,7 +264,7 @@ class OrderManager:
         # Reverse fired: opens the opposite position
         new_side = Side.SHORT if was_long else Side.LONG
         self._pos_qty = old_qty
-        self._entry_px = s3_px  # target stop price (saved before clearing)
+        self._entry_px = fill_price  # actual fill price for the reversed position
         self._entries += 1
         logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._pos_qty, self._entries)
         self._pos = new_side
