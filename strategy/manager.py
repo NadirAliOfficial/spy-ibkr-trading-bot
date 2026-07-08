@@ -32,9 +32,16 @@ class OrderManager:
         self._s3_cid: int = 0
         self._s3_px: float = 0.0
         self._s3_qty: int = 0
+        self._s3_action: str = ""
+        self._s3_filled_qty: int = 0
+        self._s3_triggered: bool = False   # first fill arrived — order is executing, hands off
         self._s3_reverse: bool = False
         self._placing_stp3: bool = False
         self._s3_cancel_ts: float = 0.0
+
+        # oid → action of orders we cancelled; if a fill arrives anyway (cancel
+        # raced the trigger at the exchange) we place an opposite MKT to undo it
+        self._undo_watch: dict[int, str] = {}
 
         self._pos: Side = Side.FLAT
         self._pos_qty: int = 0
@@ -130,7 +137,8 @@ class OrderManager:
             return
 
         # Y parent subsequent partial fills (same STOP order filling in parts)
-        if self._y and self._y.parent_filled and not self._y.filled and order_id == self._y.parent_id:
+        if (self._y and self._y.parent_filled and not self._y.filled
+                and self._pos == Side.LONG and order_id == self._y.parent_id):
             qty = max(1, int(fill_qty)) if fill_qty else 1
             self._pos_qty += qty
             self.total_bought += qty
@@ -148,7 +156,8 @@ class OrderManager:
             return
 
         # Z parent subsequent partial fills
-        if self._z and self._z.parent_filled and not self._z.filled and order_id == self._z.parent_id:
+        if (self._z and self._z.parent_filled and not self._z.filled
+                and self._pos == Side.SHORT and order_id == self._z.parent_id):
             qty = max(1, int(fill_qty)) if fill_qty else 1
             self._pos_qty += qty
             self.total_sold += qty
@@ -159,7 +168,29 @@ class OrderManager:
 
         if self._s3_pid and order_id == self._s3_pid:
             qty = max(1, int(fill_qty)) if fill_qty else 1
-            await self._on_stp3_filled(fill_price, qty)
+            await self._on_stp3_fill(fill_price, qty)
+            return
+
+        # Safety net: fill on an order we already cancelled — the cancel raced
+        # the trigger at the exchange. Neutralize with an opposite MKT so the
+        # broker position matches tracked state.
+        action = self._undo_watch.get(order_id)
+        if action:
+            qty = max(1, int(fill_qty)) if fill_qty else 1
+            opp = "SELL" if action == "BUY" else "BUY"
+            oid = self._app.next_id()
+            o = mkt(opp, qty, 0, transmit=True)
+            o.orderId = oid
+            self._app.placeOrder(oid, CONTRACT, o)
+            self._close_order_ids.add(oid)
+            if action == "BUY":
+                self.total_bought += qty
+                self.total_sold += qty
+            else:
+                self.total_sold += qty
+                self.total_bought += qty
+            logger.warning("Cancelled order %d filled %d anyway — undo %s %d placed",
+                           order_id, qty, opp, qty)
 
     async def on_partial_fill(self, order_id: int):
         pass  # Y/Z and STP3 use single STOP orders — partial fills are fine, let them complete
@@ -219,26 +250,41 @@ class OrderManager:
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
 
-    async def _on_stp3_filled(self, fill_price: float, fill_qty: int = 1):
+    async def _on_stp3_fill(self, fill_price: float, fill_qty: int):
+        # Runs per exec — STOP order may fill in several parts. Trigger logic
+        # (exit log, reverse) runs once on the first fill; every fill counts
+        # toward totals; state clears only when the full qty is done.
+        if self._s3_action == "SELL":
+            self.total_sold += fill_qty
+        else:
+            self.total_bought += fill_qty
+        self._s3_filled_qty += fill_qty
+
+        if not self._s3_triggered:
+            self._s3_triggered = True
+            await self._on_stp3_triggered(fill_price)
+
+        if self._s3_filled_qty >= self._s3_qty:
+            self._s3_pid = self._s3_cid = 0
+            self._s3_px = 0.0
+            self._s3_qty = 0
+            self._s3_filled_qty = 0
+            self._s3_action = ""
+            self._s3_reverse = False
+            self._s3_triggered = False
+
+    async def _on_stp3_triggered(self, fill_price: float):
         halt_1s = self._register_sl()
 
         was_long = self._pos == Side.LONG
         is_reverse = self._s3_reverse
         old_qty = self._pos_qty
-        s3_px = self._s3_px  # save before clearing — used for PnL and reverse entry_px
+        s3_px = self._s3_px
 
         self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
         self._slippage.append(abs(fill_price - s3_px) * self._leg)
-        if was_long:
-            self.total_sold += fill_qty
-        else:
-            self.total_bought += fill_qty
         self._pos, self._pos_qty = Side.FLAT, 0
-        self._s3_pid = self._s3_cid = 0
-        self._s3_px = 0.0
-        self._s3_qty = 0
-        self._s3_reverse = False
-        logger.info("STP3 @ %.2f qty=%d (SL/s: %d, reverse=%s)", fill_price, fill_qty, self._sl_count, is_reverse)
+        logger.info("STP3 triggered @ %.2f (SL/s: %d, reverse=%s)", fill_price, self._sl_count, is_reverse)
 
         if halt_1s:
             logger.warning("1-second exit: SL fired 2x — halting candle")
@@ -272,6 +318,8 @@ class OrderManager:
     # ── STP3 position management (primary entries Y / Y2 reverse) ──────────
 
     async def _manage_long(self, price: float):
+        if self._s3_triggered:
+            return  # STP3 executing — no cancel/re-arm until its fills complete
         favor, arm = _rp(self._open + 0.01), _rp(self._open - 0.01)
         if price >= favor:
             if self._s3_pid:
@@ -285,6 +333,8 @@ class OrderManager:
             await self._place_stp3("SELL", stop, reverse=self._entries < config.MAX_ENTRIES_PER_CANDLE)
 
     async def _manage_short(self, price: float):
+        if self._s3_triggered:
+            return  # STP3 executing — no cancel/re-arm until its fills complete
         favor, arm = _rp(self._open - 0.01), _rp(self._open + 0.01)
         if price <= favor:
             if self._s3_pid:
@@ -333,17 +383,26 @@ class OrderManager:
         self._s3_cid = 0
         self._s3_px = stop_px
         self._s3_qty = qty
+        self._s3_action = action
+        self._s3_filled_qty = 0
+        self._s3_triggered = False
         self._s3_reverse = reverse
         self._placing_stp3 = False
         logger.info("STP3: %s @ %.2f qty=%d reverse=%s", action, stop_px, qty, reverse)
 
     def _cancel_stp3(self):
+        if self._s3_triggered:
+            return  # already executing — cancelling now would orphan remaining fills
         for oid in (self._s3_pid, self._s3_cid):
             if oid:
                 self._app.cancelOrder(oid)
+                self._undo_watch[oid] = self._s3_action
         self._s3_pid = self._s3_cid = 0
         self._s3_cancel_ts = time.time()
         self._s3_px = 0.0
+        self._s3_qty = 0
+        self._s3_action = ""
+        self._s3_filled_qty = 0
         self._s3_reverse = False
         self._placing_stp3 = False
 
@@ -372,9 +431,23 @@ class OrderManager:
 
         self._y = self._z = None
         self._pending = False
-        self._s3_pid = self._s3_cid = 0
-        self._s3_px = 0.0
-        self._s3_reverse = False
+        if not self._s3_triggered:
+            # keep tracking if STP3 is mid-fill — its remaining fills net out
+            # against the flatten order above
+            self._s3_pid = self._s3_cid = 0
+            self._s3_px = 0.0
+            self._s3_reverse = False
+        self._pos, self._pos_qty = Side.FLAT, 0
+
+    def cancel_all_orders(self):
+        """Cancel everything without placing a flatten — used when order state
+        is unreliable (201) and the real position must come from the broker."""
+        self._halted = True
+        self._cancel_group(self._y)
+        self._cancel_group(self._z)
+        self._cancel_stp3()
+        self._y = self._z = None
+        self._pending = False
         self._pos, self._pos_qty = Side.FLAT, 0
 
     def _cancel_group(self, g: OrderGroup | None):
@@ -382,4 +455,5 @@ class OrderManager:
             self._app.cancelOrder(g.parent_id)
             if g.child_id:
                 self._app.cancelOrder(g.child_id)
+            self._undo_watch[g.parent_id] = "BUY" if g.side == Side.LONG else "SELL"
             g.cancelled = True

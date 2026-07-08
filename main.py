@@ -152,13 +152,16 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
 
         elif etype == "error":
             if event.get("code") == 201:
+                if risk_mgr.done:
+                    continue  # already stopping — clean-slate orders may 201 too
                 oid = event.get("reqId", -1)
-                if order_mgr.is_close_order(oid):
-                    logger.warning("Close order %d rejected (201) — position may need manual close, continuing", oid)
-                else:
-                    logger.warning("Entry order rejected (201) — stopping bot immediately per client directive")
-                    risk_mgr.done = True
-                    await order_mgr.exit_all("order rejected 201")
+                kind = "close" if order_mgr.is_close_order(oid) else "entry"
+                logger.warning("%s order %d rejected (201) — stopping bot, flattening real broker position", kind, oid)
+                risk_mgr.done = True
+                mark_day_done()
+                order_mgr.cancel_all_orders()
+                await asyncio.sleep(1.5)  # let cancels settle before querying positions
+                await app.clean_slate()   # flatten what the broker actually holds
 
         elif etype == "pnl":
             daily_pnl = event["dailyPnL"]
