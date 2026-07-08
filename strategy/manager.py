@@ -31,10 +31,10 @@ class OrderManager:
         self._s3_pid: int = 0
         self._s3_cid: int = 0
         self._s3_px: float = 0.0
-        self._s3_qty: int = 0           # total shares in STP3 bracket (parent+child)
+        self._s3_qty: int = 0
         self._s3_reverse: bool = False
         self._placing_stp3: bool = False
-        self._s3_cancel_ts: float = 0.0  # timestamp of last STP3 cancel (prevent race)
+        self._s3_cancel_ts: float = 0.0
 
         self._pos: Side = Side.FLAT
         self._pos_qty: int = 0
@@ -157,12 +157,12 @@ class OrderManager:
                 self._z.filled = True
             return
 
-        if self._s3_cid and order_id == self._s3_cid:
-            await self._on_stp3_filled(fill_price)
+        if self._s3_pid and order_id == self._s3_pid:
+            qty = max(1, int(fill_qty)) if fill_qty else 1
+            await self._on_stp3_filled(fill_price, qty)
 
     async def on_partial_fill(self, order_id: int):
-        if self._s3_cid and order_id == self._s3_cid:
-            self._app.cancelOrder(order_id)  # cancel STP3 child partials to prevent state mismatch
+        pass  # Y/Z and STP3 use single STOP orders — partial fills are fine, let them complete
 
     def is_close_order(self, order_id: int) -> bool:
         return order_id in self._close_order_ids
@@ -219,31 +219,31 @@ class OrderManager:
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
 
-    async def _on_stp3_filled(self, fill_price: float):
+    async def _on_stp3_filled(self, fill_price: float, fill_qty: int = 1):
         halt_1s = self._register_sl()
 
         was_long = self._pos == Side.LONG
         is_reverse = self._s3_reverse
-        old_qty = self._pos_qty  # save before reset — reverse opens same qty
+        old_qty = self._pos_qty
+        s3_px = self._s3_px  # save before clearing — used for PnL and reverse entry_px
 
-        self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, self._s3_px, "STP3")
-        self._slippage.append(abs(fill_price - self._s3_px) * self._leg)
+        self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, s3_px, "STP3")
+        self._slippage.append(abs(fill_price - s3_px) * self._leg)
         if was_long:
-            self.total_sold += self._s3_qty
+            self.total_sold += fill_qty
         else:
-            self.total_bought += self._s3_qty
+            self.total_bought += fill_qty
         self._pos, self._pos_qty = Side.FLAT, 0
         self._s3_pid = self._s3_cid = 0
         self._s3_px = 0.0
         self._s3_qty = 0
         self._s3_reverse = False
-        logger.info("STP3 filled @ %.2f (SL/s: %d, reverse=%s)", fill_price, self._sl_count, is_reverse)
+        logger.info("STP3 @ %.2f qty=%d (SL/s: %d, reverse=%s)", fill_price, fill_qty, self._sl_count, is_reverse)
 
         if halt_1s:
             logger.warning("1-second exit: SL fired 2x — halting candle")
             self._halted = True
             if is_reverse:
-                # Reverse already opened opposite position — flatten it now
                 action = "BUY" if was_long else "SELL"
                 oid = self._app.next_id()
                 o = mkt(action, old_qty, 0, transmit=True)
@@ -261,10 +261,10 @@ class OrderManager:
             self._halted = True
             return
 
-        # Reverse fired: opens the opposite position (YA, Y2, Y2A, Y2B etc.)
+        # Reverse fired: opens the opposite position
         new_side = Side.SHORT if was_long else Side.LONG
-        self._pos_qty = old_qty  # reversed position has same qty as the one just closed
-        self._entry_px = self._s3_px  # target stop price, not fill price
+        self._pos_qty = old_qty
+        self._entry_px = s3_px  # target stop price (saved before clearing)
         self._entries += 1
         logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._pos_qty, self._entries)
         self._pos = new_side
@@ -325,18 +325,17 @@ class OrderManager:
 
     async def _place_stp3(self, action: str, stop_px: float, reverse: bool = False):
         self._placing_stp3 = True
-        pid, cid = self._app.next_id(), self._app.next_id()
-        # Use actual filled position size, not assumed leg_qty
-        child_qty = (2 * self._pos_qty - 1) if reverse else (self._pos_qty - 1)
-        p = stp(action, 1, stop_px, transmit=False); p.orderId = pid
-        c = mkt(action, child_qty, pid, transmit=True); c.orderId = cid
+        pid = self._app.next_id()
+        qty = (2 * self._pos_qty) if reverse else self._pos_qty
+        p = stp(action, qty, stop_px, transmit=True); p.orderId = pid
         self._app.placeOrder(pid, CONTRACT, p)
-        self._app.placeOrder(cid, CONTRACT, c)
-        self._s3_pid, self._s3_cid, self._s3_px = pid, cid, stop_px
-        self._s3_qty = 1 + child_qty
+        self._s3_pid = pid
+        self._s3_cid = 0
+        self._s3_px = stop_px
+        self._s3_qty = qty
         self._s3_reverse = reverse
         self._placing_stp3 = False
-        logger.info("STP3: %s @ %.2f qty=1+%d reverse=%s", action, stop_px, child_qty, reverse)
+        logger.info("STP3: %s @ %.2f qty=%d reverse=%s", action, stop_px, qty, reverse)
 
     def _cancel_stp3(self):
         for oid in (self._s3_pid, self._s3_cid):
@@ -381,5 +380,6 @@ class OrderManager:
     def _cancel_group(self, g: OrderGroup | None):
         if g and not g.filled and not g.cancelled:
             self._app.cancelOrder(g.parent_id)
-            self._app.cancelOrder(g.child_id)
+            if g.child_id:
+                self._app.cancelOrder(g.child_id)
             g.cancelled = True
