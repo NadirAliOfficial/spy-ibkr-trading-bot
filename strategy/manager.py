@@ -15,6 +15,7 @@ _rp = lambda p: round(round(p / 0.01) * 0.01, 2)
 
 class OrderManager:
     def __init__(self, app, leg_qty: int, margin_per_share: float = 0.0, margin_pct: float = 1.6):
+        self._lock = asyncio.Lock()
         self._app = app
         self._leg = leg_qty          # total position size (ELV-2%/margin)
         self._margin = margin_per_share
@@ -61,6 +62,7 @@ class OrderManager:
 
         self.last_bid: float = 0.0
         self.last_ask: float = 0.0
+        self._defer_yz: bool = False
 
     @property
     def mean_slippage(self) -> float | None:
@@ -77,20 +79,26 @@ class OrderManager:
     # ── Candle lifecycle ──────────────────────────────────────────────────
 
     async def on_candle_open(self, open_price: float):
-        self._open = open_price
-        self._entries = 0
-        self._halted = False
-        self._pending = False
-        self._sl_count = 0
-        self._sl_sec = -1
-        self._tp_count = 0
-        logger.info("Candle open: %.2f", open_price)
-        if self._pos == Side.FLAT:
-            await self._place_yz()
+        async with self._lock:
+            self._open = open_price
+            self._entries = 0
+            self._pending = False
+            self._sl_count = 0
+            self._sl_sec = -1
+            self._tp_count = 0
+            logger.info("Candle open: %.2f", open_price)
+            if self._exit_orders:
+                self._defer_yz = True
+                logger.info("Candle open: defer Y/Z until flatten fill completes")
+                return
+            self._halted = False
+            if self._pos == Side.FLAT:
+                await self._place_yz()
 
     async def on_59th_second(self):
-        await self.exit_all("59s timer")
-        self._recalc_qty()  # size next candle's orders (spec: at 59th second)
+        async with self._lock:
+            await self._exit_all("59s timer")
+            self._recalc_qty()  # size next candle's orders (spec: at 59th second)
 
     def _recalc_qty(self):
         price = (self.last_bid + self.last_ask) / 2 if self.last_bid > 0 and self.last_ask > 0 else self._open
@@ -106,26 +114,37 @@ class OrderManager:
             self._leg = new_leg
 
     async def on_tick(self, price: float, sim_hits: int):
-        if self._halted:
-            return
-        if self._pos == Side.LONG:
-            await self._manage_long(price)
-        elif self._pos == Side.SHORT:
-            await self._manage_short(price)
-        elif (self._pos == Side.FLAT and
-              not self._pending and
-              self._entries < config.MAX_ENTRIES_PER_CANDLE and
-              self._tp_count < 2):
-            await self._place_yz()
+        async with self._lock:
+            if self._halted:
+                return
+            if self._pos == Side.LONG:
+                await self._manage_long(price)
+            elif self._pos == Side.SHORT:
+                await self._manage_short(price)
+            elif (self._pos == Side.FLAT and
+                  not self._pending and
+                  not self._exit_orders and
+                  not self._defer_yz and
+                  self._entries < config.MAX_ENTRIES_PER_CANDLE and
+                  self._tp_count < 2):
+                await self._place_yz()
 
     # ── Fill routing ──────────────────────────────────────────────────────
 
     async def on_fill(self, order_id: int, fill_price: float, fill_qty: int = 0):
+        async with self._lock:
+            await self._on_fill_locked(order_id, fill_price, fill_qty)
+
+    async def _on_fill_locked(self, order_id: int, fill_price: float, fill_qty: int = 0):
         if order_id in self._exit_orders:
             side, entry, qty, reason = self._exit_orders.pop(order_id)
             self._log_exec(side, entry, fill_price, reason, qty)
             self._pos = Side.FLAT
             self._pos_qty = 0
+            self._halted = False
+            if self._defer_yz:
+                self._defer_yz = False
+                await self._place_yz()
             return
 
         # Y parent first fill — starts LONG position
@@ -418,7 +437,12 @@ class OrderManager:
     # ── Global exit ───────────────────────────────────────────────────────
 
     async def exit_all(self, reason: str = ""):
-        self._halted = True  # block concurrent on_tick from re-entering
+        async with self._lock:
+            await self._exit_all(reason)
+
+    async def _exit_all(self, reason: str = ""):
+        self._halted = True
+        self._defer_yz = False
         logger.info("Exit all: %s", reason)
         self._cancel_group(self._y)
         self._cancel_group(self._z)
@@ -437,12 +461,12 @@ class OrderManager:
             else:
                 self.total_bought += self._pos_qty
             logger.info("Flatten pos: %s %d (pending fill for real PnL)", action, self._pos_qty)
+        else:
+            self._halted = False
 
         self._y = self._z = None
         self._pending = False
         if not self._s3_triggered:
-            # keep tracking if STP3 is mid-fill — its remaining fills net out
-            # against the flatten order above
             self._s3_pid = self._s3_cid = 0
             self._s3_px = 0.0
             self._s3_reverse = False
@@ -452,6 +476,7 @@ class OrderManager:
         """Cancel everything without placing a flatten — used when order state
         is unreliable (201) and the real position must come from the broker."""
         self._halted = True
+        self._defer_yz = False
         self._cancel_group(self._y)
         self._cancel_group(self._z)
         self._cancel_stp3()

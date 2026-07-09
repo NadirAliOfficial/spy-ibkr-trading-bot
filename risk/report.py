@@ -220,9 +220,9 @@ def email_report(sim_records: list[CandleRecord], candles: list[Candle],
                  mean_slippage: float | None = None,
                  total_executed_orders: int = 0, total_slippage: float = 0.0):
     api_key = config.RESEND_API_KEY
-    to_addr = config.REPORT_EMAIL_TO
+    to_addrs = config.REPORT_EMAIL_TO
 
-    if not api_key or not to_addr:
+    if not api_key or not to_addrs:
         logger.warning("Email not configured — skipping. Set RESEND_API_KEY and REPORT_EMAIL_TO in .env")
         return
 
@@ -231,11 +231,11 @@ def email_report(sim_records: list[CandleRecord], candles: list[Candle],
     try:
         resend.Emails.send({
             "from": "SPY Bot <onboarding@resend.dev>",
-            "to": [to_addr],
+            "to": to_addrs,
             "subject": subject,
             "html": _generate_html(sim_records, candles, abnormal_exits, script_errors, total_bought, total_sold, mean_slippage, total_executed_orders, total_slippage),
             "text": generate_report(sim_records, candles, abnormal_exits, script_errors, total_bought, total_sold, mean_slippage, total_executed_orders, total_slippage),
         })
-        logger.info("Report emailed to %s", to_addr)
+        logger.info("Report emailed to %s", ", ".join(to_addrs))
     except Exception as e:
         logger.error("Failed to email report: %s", e)

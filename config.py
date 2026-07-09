@@ -52,6 +52,8 @@ TP1_TRAIL_PCT = 0.04
 TP2_ARM_PCT = 0.105
 TP2_TRAIL_PCT = 0.10
 
-# Email report
+# Email report — comma-separated recipients
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-REPORT_EMAIL_TO = os.getenv("REPORT_EMAIL_TO", "")
+REPORT_EMAIL_TO = [
+    e.strip() for e in os.getenv("REPORT_EMAIL_TO", "").split(",") if e.strip()
+]
