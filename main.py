@@ -159,7 +159,7 @@ async def order_loop(app, order_mgr: OrderManager, risk_mgr: RiskManager):
                 logger.warning("%s order %d rejected (201) — stopping bot, flattening real broker position", kind, oid)
                 risk_mgr.done = True
                 mark_day_done()
-                order_mgr.cancel_all_orders()
+                await order_mgr.cancel_all_orders()
                 await asyncio.sleep(1.5)  # let cancels settle before querying positions
                 await app.clean_slate()   # flatten what the broker actually holds
 

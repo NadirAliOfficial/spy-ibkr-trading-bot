@@ -472,17 +472,18 @@ class OrderManager:
             self._s3_reverse = False
         self._pos, self._pos_qty = Side.FLAT, 0
 
-    def cancel_all_orders(self):
+    async def cancel_all_orders(self):
         """Cancel everything without placing a flatten — used when order state
         is unreliable (201) and the real position must come from the broker."""
-        self._halted = True
-        self._defer_yz = False
-        self._cancel_group(self._y)
-        self._cancel_group(self._z)
-        self._cancel_stp3()
-        self._y = self._z = None
-        self._pending = False
-        self._pos, self._pos_qty = Side.FLAT, 0
+        async with self._lock:
+            self._halted = True
+            self._defer_yz = False
+            self._cancel_group(self._y)
+            self._cancel_group(self._z)
+            self._cancel_stp3()
+            self._y = self._z = None
+            self._pending = False
+            self._pos, self._pos_qty = Side.FLAT, 0
 
     def _cancel_group(self, g: OrderGroup | None):
         if g and not g.filled and not g.cancelled:
