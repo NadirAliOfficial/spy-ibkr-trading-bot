@@ -479,8 +479,8 @@ async def run():
     candles = CandleBuilder()
     sim_sl_one = SimStopLoss()  # 9:30am–12:30pm → report at 12:30pm
     sim_sl_two = SimStopLoss()  # 12:30pm–3:59pm  → report at 3:59pm
-    order_mgr = OrderManager(app, leg_qty, sell_margin, margin_pct)
     risk_mgr = RiskManager(elv)
+    order_mgr = OrderManager(app, leg_qty, sell_margin, margin_pct, is_session_done=lambda: risk_mgr.done)
     if config.SIM_ONLY:
         risk_mgr.done = True   # disables order placement; tick loop still runs the sim SL
 

@@ -14,12 +14,17 @@ _rp = lambda p: round(round(p / 0.01) * 0.01, 2)
 
 
 class OrderManager:
-    def __init__(self, app, leg_qty: int, margin_per_share: float = 0.0, margin_pct: float = 1.6):
+    def __init__(self, app, leg_qty: int, margin_per_share: float = 0.0, margin_pct: float = 1.6,
+                 is_session_done=None):
         self._lock = asyncio.Lock()
         self._app = app
         self._leg = leg_qty          # total position size (ELV-2%/margin)
         self._margin = margin_per_share
         self._margin_pct = margin_pct   # short SPY margin as fraction of price
+        # checked by _delayed_place_yz before firing a paced re-entry — the
+        # background delay can outlive a risk-exit that set done=True while
+        # pos happened to already be FLAT (see _delayed_place_yz)
+        self._is_session_done = is_session_done or (lambda: False)
 
         self._open: float = 0.0
         self._entries: int = 0          # position-opens this candle (cap 5)
@@ -387,14 +392,31 @@ class OrderManager:
     # ── Order placement ───────────────────────────────────────────────────
 
     async def _place_yz(self):
+        # Caller already holds self._lock. On re-entries (entries>0) this used
+        # to `await asyncio.sleep(0.5)` right here, which held the lock for
+        # the whole pacing delay — blocking fills, 201 handling, and PnL risk
+        # exits from being processed for up to 0.5s per re-entry (2026-07-10
+        # finding). The delay now runs in a background task with the lock
+        # released, and re-validates every guard on reacquire.
         if self._entries >= config.MAX_ENTRIES_PER_CANDLE or self._halted or self._tp_count >= 2:
             return
-
         if self._entries > 0:
-            await asyncio.sleep(0.5)
-            if self._halted or self._entries >= config.MAX_ENTRIES_PER_CANDLE:
-                return
+            self._pending = True  # reserve the slot so nothing else re-enters during the delay
+            asyncio.create_task(self._delayed_place_yz())
+            return
+        self._do_place_yz()
 
+    async def _delayed_place_yz(self):
+        await asyncio.sleep(0.5)
+        async with self._lock:
+            if (self._halted or self._is_session_done() or self._pos != Side.FLAT
+                    or self._exit_orders or self._defer_yz
+                    or self._entries >= config.MAX_ENTRIES_PER_CANDLE or self._tp_count >= 2):
+                self._pending = False
+                return
+            self._do_place_yz()
+
+    def _do_place_yz(self):
         y_pid = self._app.next_id()
         z_pid = self._app.next_id()
         buy_px, sell_px = _rp(self._open + 0.01), _rp(self._open - 0.01)
