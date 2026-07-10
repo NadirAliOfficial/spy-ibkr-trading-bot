@@ -133,8 +133,8 @@ def generate_report(sim_records: list[CandleRecord], candles: list[Candle],
 
     lines.append(f"\nTotal SPY Bought = {total_bought}")
     lines.append(f"Total SPY Sold = {total_sold}")
-    slip_str = f"${mean_slippage:.4f}" if mean_slippage is not None else "N/A"
-    lines.append(f"Mean Slippage ($/order) = {slip_str}")
+    slip_str = f"{mean_slippage:.4f}" if mean_slippage is not None else "N/A"
+    lines.append(f"Mean Slippage (points/order) = {slip_str}")
     lines.append(f"Total Executed Orders = {total_executed_orders}")
     lines.append(f"Total Slippage ($) = {total_slippage:.4f}")
     lines.append(f"\nAbnormal Exits = {abnormal_exits}")
@@ -199,7 +199,7 @@ def _generate_html(sim_records: list[CandleRecord], candles: list[Candle],
   {total_line}
   <p style="font-size:15px;margin-top:16px;"><strong>Total SPY Bought</strong> = {total_bought}</p>
   <p style="font-size:15px;margin-top:4px;"><strong>Total SPY Sold</strong> = {total_sold}</p>
-  <p style="font-size:15px;margin-top:4px;"><strong>Mean Slippage ($/order)</strong> = {f"${mean_slippage:.4f}" if mean_slippage is not None else "N/A"}</p>
+  <p style="font-size:15px;margin-top:4px;"><strong>Mean Slippage (points/order)</strong> = {f"{mean_slippage:.4f}" if mean_slippage is not None else "N/A"}</p>
   <p style="font-size:15px;margin-top:4px;"><strong>Total Executed Orders</strong> = {total_executed_orders}</p>
   <p style="font-size:15px;margin-top:4px;"><strong>Total Slippage ($)</strong> = ${total_slippage:.4f}</p>
   <p style="font-size:15px;margin-top:16px;"><strong>Abnormal Exits</strong> = {abnormal_exits}</p>

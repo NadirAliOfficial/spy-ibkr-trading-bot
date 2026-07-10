@@ -58,7 +58,8 @@ class OrderManager:
 
         self.total_bought: int = 0
         self.total_sold: int = 0
-        self._slippage: list[float] = []
+        self._slippage: list[float] = []       # raw points (|fill - target|), for mean
+        self._slippage_dollars: list[float] = []  # points x qty, for total $ and PnL credit
 
         self.last_bid: float = 0.0
         self.last_ask: float = 0.0
@@ -74,7 +75,7 @@ class OrderManager:
 
     @property
     def total_slippage(self) -> float:
-        return round(sum(self._slippage), 4)
+        return round(sum(self._slippage_dollars), 4)
 
     # ── Candle lifecycle ──────────────────────────────────────────────────
 
@@ -239,12 +240,15 @@ class OrderManager:
         logger.info("EXEC %s | open=%.2f fill=%.2f exit=%.2f | %s (%s) | trade=%.2f botPnL=%.2f",
                     side.name, self._open, entry, exit_px, kind, reason, trade_pnl, self._bot_realized)
 
-    def _credit_slippage(self, slip: float):
+    def _credit_slippage(self, slip_per_share: float, qty: int):
         # Client spec: slippage (|fill - target| x order size) is added back as
         # profit in the strategy PnL for every executed order, so botPnL shows
-        # the strategy's result at target prices.
-        self._slippage.append(slip)
-        self._bot_realized = round(self._bot_realized + slip, 2)
+        # the strategy's result at target prices. Mean Slippage in the report
+        # is the raw per-share figure; Total Slippage ($) is dollar-scaled.
+        dollars = round(slip_per_share * qty, 4)
+        self._slippage.append(slip_per_share)
+        self._slippage_dollars.append(dollars)
+        self._bot_realized = round(self._bot_realized + dollars, 2)
 
     # ── Entry fills ───────────────────────────────────────────────────────
 
@@ -256,7 +260,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_bought += fill_qty
-        self._credit_slippage(abs(fill_price - _rp(self._open + 0.01)) * self._leg)
+        self._credit_slippage(abs(fill_price - _rp(self._open + 0.01)), self._leg)
         if self._pos_qty >= self._leg:
             self._y.filled = True
         logger.info("Y LONG filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
@@ -269,7 +273,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_sold += fill_qty
-        self._credit_slippage(abs(fill_price - _rp(self._open - 0.01)) * self._leg)
+        self._credit_slippage(abs(fill_price - _rp(self._open - 0.01)), self._leg)
         if self._pos_qty >= self._leg:
             self._z.filled = True
         logger.info("Z SHORT filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
@@ -310,7 +314,7 @@ class OrderManager:
         self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
         # order qty (2x leg on reverse) — covers slippage on both the closing
         # and the opening half of the reverse
-        self._credit_slippage(abs(fill_price - s3_px) * self._s3_qty)
+        self._credit_slippage(abs(fill_price - s3_px), self._s3_qty)
         self._pos, self._pos_qty = Side.FLAT, 0
         logger.info("STP3 triggered @ %.2f (SL/s: %d, reverse=%s)", fill_price, self._sl_count, is_reverse)
 
