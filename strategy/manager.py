@@ -83,7 +83,6 @@ class OrderManager:
         async with self._lock:
             self._open = open_price
             self._entries = 0
-            self._pending = False
             self._sl_count = 0
             self._sl_sec = -1
             self._tp_count = 0
@@ -93,7 +92,13 @@ class OrderManager:
                 logger.info("Candle open: defer Y/Z until flatten fill completes")
                 return
             self._halted = False
-            if self._pos == Side.FLAT:
+            # _pending is NOT reset here — a stale on_tick task from just
+            # before the candle rolled over may have already placed a Y/Z
+            # group with the old candle's data. Clobbering _pending=False
+            # here would let this handler place a second, redundant Y/Z
+            # (2026-07-10 09:38 incident: two Y/Z pairs placed in the same
+            # instant, ~4x intended exposure, 201 margin rejection).
+            if self._pos == Side.FLAT and not self._pending:
                 await self._place_yz()
 
     async def on_59th_second(self):
