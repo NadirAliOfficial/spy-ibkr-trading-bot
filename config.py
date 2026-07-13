@@ -46,6 +46,12 @@ _eod = os.getenv("EOD_EXIT", "15:59").split(":")
 EOD_EXIT_HOUR, EOD_EXIT_MIN = int(_eod[0]), int(_eod[1])
 
 # Risk
+# Single-sided whatIf SELL probe underestimates the true margin IBKR reserves
+# once both Y (BUY stop) and Z (SELL stop) are live simultaneously — 2026-07-13
+# 201 needed $45,925.64 for a 129-share order sized off a $225.54/share probe,
+# i.e. ~1.58x the probed figure. Multiplier applied to the probed margin
+# before sizing leg_qty, so headroom survives normal intraday PnL swings too.
+MARGIN_SAFETY_MULT = 1.8
 HARD_SL_PCT = 0.02
 TP1_ARM_PCT = 0.045
 TP1_TRAIL_PCT = 0.04

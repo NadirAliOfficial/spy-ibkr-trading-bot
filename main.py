@@ -448,8 +448,10 @@ async def run():
         if elv <= 0:
             logger.error("ELV=0 — aborting")
             return
-        # OCO removed (NADIR6) — Y and Z are independent orders, IBKR nets BUY+SELL
-        # pending exposure. Size against current ELV per client spec (ELV-2%/margin).
+        # OCO removed (NADIR6) — Y and Z are independent orders. IBKR does NOT
+        # net the pending BUY+SELL exposure in practice (2026-07-13 rejection);
+        # see MARGIN_SAFETY_MULT. Size against current ELV per client spec
+        # (ELV-2%/margin).
         spy_price = app.last_price if app.last_price > 10 else 750.0
         prev_day_elv = app.prev_day_elv
         sizing_elv = min(prev_day_elv, elv) if prev_day_elv > 0 else elv
@@ -460,9 +462,11 @@ async def run():
         else:
             sell_margin = max(round(spy_price * 1.6, 2), 950.0)
             logger.warning("whatIf margin unavailable (%.2f) — fallback %.2f", short_margin, sell_margin)
+        # single-sided probe -> real Y+Z concurrent margin (see config.MARGIN_SAFETY_MULT)
+        sell_margin = round(sell_margin * config.MARGIN_SAFETY_MULT, 2)
         margin_pct = sell_margin / spy_price
-        logger.info("Short margin (whatIf)=%.2f (%.0f%%)  ELV=%.2f  prev_day_ELV=%.2f  sizing_ELV=%.2f",
-                    sell_margin, margin_pct * 100, elv, prev_day_elv, sizing_elv)
+        logger.info("Short margin (whatIf, safety-adjusted x%.1f)=%.2f (%.0f%%)  ELV=%.2f  prev_day_ELV=%.2f  sizing_ELV=%.2f",
+                    config.MARGIN_SAFETY_MULT, sell_margin, margin_pct * 100, elv, prev_day_elv, sizing_elv)
 
         leg_qty = calc_leg_qty(sizing_elv, sell_margin)
         if leg_qty < 1:
