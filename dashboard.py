@@ -631,11 +631,19 @@ def parse_log():
 
     if parsed:
         last = parsed[-1]["msg"]
+        # "Day marked done:" is logged on every terminal exit path (dashboard
+        # stop, 59s/EOD flatten, 10:30am pnl exit, risk exit, 201 rejection,
+        # signal) — not just at final session close. Without this check the
+        # log-parse fallback (used once bot_status.json goes stale 30s after
+        # status_writer stops updating on risk_mgr.done) incorrectly kept
+        # reporting "running" for hours after a real stop, showing the STOP
+        # button again with nothing left listening for it.
+        day_done = any("Day marked done:" in e["msg"] for e in parsed)
         if "Waiting" in last or "pre-check" in last:
             state["status"] = "waiting"
         elif "Early close" in last:
             state["status"] = "holiday"
-        elif "Session complete" in last:
+        elif day_done or "Session complete" in last:
             state["status"] = "ended"
         elif state["account"]:
             state["status"] = "running"

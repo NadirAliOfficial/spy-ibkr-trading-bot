@@ -150,6 +150,11 @@ class OrderManager:
         if order_id in self._exit_orders:
             side, entry, qty, reason = self._exit_orders.pop(order_id)
             self._log_exec(side, entry, fill_price, reason, qty)
+            # MKT flatten (59s timer, dashboard stop, EOD, 10:30am, risk exits)
+            # has no predefined target price, so it carries no slippage, but it
+            # is still one executed order — count it (client spec: every entry
+            # AND every exit counts, min 2/candle, max 8/candle at 4 entries)
+            self._credit_slippage(0.0, qty)
             self._pos = Side.FLAT
             self._pos_qty = 0
             self._halted = False
@@ -322,9 +327,17 @@ class OrderManager:
         s3_px = self._s3_px
 
         self._log_exec(Side.LONG if was_long else Side.SHORT, self._entry_px, fill_price, "STP3")
-        # order qty (2x leg on reverse) — covers slippage on both the closing
-        # and the opening half of the reverse
-        self._credit_slippage(abs(fill_price - s3_px), self._s3_qty)
+        slip_per_share = abs(fill_price - s3_px)
+        if is_reverse:
+            # one STOP order, but economically an exit + a new entry — count
+            # both separately (client spec: every entry AND every exit counts).
+            # Same fill/target on both halves so slippage splits evenly;
+            # old_qty == half of self._s3_qty (reverse doubles the qty), so
+            # the combined dollar total is unchanged from before this split.
+            self._credit_slippage(slip_per_share, old_qty)  # closes old position
+            self._credit_slippage(slip_per_share, old_qty)  # opens reversed position
+        else:
+            self._credit_slippage(slip_per_share, self._s3_qty)  # exit only
         self._pos, self._pos_qty = Side.FLAT, 0
         logger.info("STP3 triggered @ %.2f (SL/s: %d, reverse=%s)", fill_price, self._sl_count, is_reverse)
 
@@ -341,6 +354,7 @@ class OrderManager:
                     self.total_bought += old_qty
                 else:
                     self.total_sold += old_qty
+                self._credit_slippage(0.0, old_qty)  # emergency MKT flatten, no target price
                 logger.info("1s halt flatten: %s %d", action, old_qty)
             return
 
