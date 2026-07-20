@@ -51,6 +51,7 @@ class OrderManager:
 
         self._pos: Side = Side.FLAT
         self._pos_qty: int = 0
+        self._pos_fully_filled: bool = False  # False while bracket child still catching up
         self._entry_px: float = 0.0
         self._bot_realized: float = 0.0   # strategy's own realized P&L (this session)
 
@@ -163,7 +164,9 @@ class OrderManager:
                 await self._place_yz()
             return
 
-        # Y parent first fill — starts LONG position
+        # Y parent (1 share) fill — trigger confirmed. Per spec: this cancels Z
+        # and starts the LONG; the remaining leg-1 shares come via the child
+        # MKT order, which only activates now that the parent has filled.
         if self._y and not self._y.cancelled and not self._y.parent_filled and order_id == self._y.parent_id:
             self._y.parent_filled = True
             self._y.entry_price = fill_price
@@ -171,18 +174,19 @@ class OrderManager:
             await self._on_y_parent_filled(fill_price, qty)
             return
 
-        # Y parent subsequent partial fills (same STOP order filling in parts)
+        # Y child fills (remaining leg-1 shares, MKT, may arrive in parts)
         if (self._y and self._y.parent_filled and not self._y.filled
-                and self._pos == Side.LONG and order_id == self._y.parent_id):
+                and self._y.child_id and self._pos == Side.LONG and order_id == self._y.child_id):
             qty = max(1, int(fill_qty)) if fill_qty else 1
             self._pos_qty += qty
             self.total_bought += qty
-            logger.info("Y LONG fill +%d shares → total pos=%d", qty, self._pos_qty)
+            logger.info("Y LONG child fill +%d shares → total pos=%d", qty, self._pos_qty)
             if self._pos_qty >= self._leg:
                 self._y.filled = True
+                self._pos_fully_filled = True
             return
 
-        # Z parent first fill — starts SHORT position
+        # Z parent (1 share) fill — trigger confirmed. Mirrors Y above.
         if self._z and not self._z.cancelled and not self._z.parent_filled and order_id == self._z.parent_id:
             self._z.parent_filled = True
             self._z.entry_price = fill_price
@@ -190,15 +194,16 @@ class OrderManager:
             await self._on_z_parent_filled(fill_price, qty)
             return
 
-        # Z parent subsequent partial fills
+        # Z child fills (remaining leg-1 shares, MKT, may arrive in parts)
         if (self._z and self._z.parent_filled and not self._z.filled
-                and self._pos == Side.SHORT and order_id == self._z.parent_id):
+                and self._z.child_id and self._pos == Side.SHORT and order_id == self._z.child_id):
             qty = max(1, int(fill_qty)) if fill_qty else 1
             self._pos_qty += qty
             self.total_sold += qty
-            logger.info("Z SHORT fill +%d shares → total pos=%d", qty, self._pos_qty)
+            logger.info("Z SHORT child fill +%d shares → total pos=%d", qty, self._pos_qty)
             if self._pos_qty >= self._leg:
                 self._z.filled = True
+                self._pos_fully_filled = True
             return
 
         if self._s3_pid and order_id == self._s3_pid:
@@ -228,7 +233,12 @@ class OrderManager:
                            order_id, qty, opp, qty)
 
     async def on_partial_fill(self, order_id: int):
-        pass  # Y/Z and STP3 use single STOP orders — partial fills are fine, let them complete
+        # No-op: quantity accumulation (parent, child, or STP3) is driven by
+        # execDetails/on_fill, which correctly tracks incremental fills per
+        # order id. Cancelling on a partial fill here (the original bug) is
+        # exactly what caused the "only 2 shares filling" incident this was
+        # fixed from — do not reintroduce that.
+        pass
 
     def is_close_order(self, order_id: int) -> bool:
         return order_id in self._close_order_ids
@@ -271,6 +281,7 @@ class OrderManager:
         self._cancel_group(self._z)
         self._pos = Side.LONG
         self._pos_qty = fill_qty
+        self._pos_fully_filled = fill_qty >= self._leg  # True only if no child needed (leg<=1)
         self._entry_px = fill_price  # actual fill price — slippage naturally in strategy PnL
         self._pending = False
         self._entries += 1
@@ -278,12 +289,13 @@ class OrderManager:
         self._credit_slippage(abs(fill_price - _rp(self._open + 0.01)), self._leg)
         if self._pos_qty >= self._leg:
             self._y.filled = True
-        logger.info("Y LONG filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
+        logger.info("Y LONG parent filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
 
     async def _on_z_parent_filled(self, fill_price: float, fill_qty: int = 1):
         self._cancel_group(self._y)
         self._pos = Side.SHORT
         self._pos_qty = fill_qty
+        self._pos_fully_filled = fill_qty >= self._leg  # True only if no child needed (leg<=1)
         self._entry_px = fill_price  # actual fill price — slippage naturally in strategy PnL
         self._pending = False
         self._entries += 1
@@ -291,7 +303,7 @@ class OrderManager:
         self._credit_slippage(abs(fill_price - _rp(self._open - 0.01)), self._leg)
         if self._pos_qty >= self._leg:
             self._z.filled = True
-        logger.info("Z SHORT filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
+        logger.info("Z SHORT parent filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
 
@@ -363,9 +375,12 @@ class OrderManager:
             self._halted = True
             return
 
-        # Reverse fired: opens the opposite position
+        # Reverse fired: opens the opposite position. STP3 fills the full
+        # (2x leg) quantity in one order, not a bracket, so the position is
+        # complete as soon as this fill lands -- no child to wait for.
         new_side = Side.SHORT if was_long else Side.LONG
         self._pos_qty = old_qty
+        self._pos_fully_filled = True
         self._entry_px = fill_price  # actual fill price for the reversed position
         self._entries += 1
         logger.info("Reverse entered: now %s %d (entry#%d)", new_side.name, self._pos_qty, self._entries)
@@ -376,6 +391,8 @@ class OrderManager:
     async def _manage_long(self, price: float):
         if self._s3_triggered:
             return  # STP3 executing — no cancel/re-arm until its fills complete
+        if not self._pos_fully_filled:
+            return  # bracket child still catching up — don't arm STP3 against a partial qty
         favor, arm = _rp(self._open + 0.01), _rp(self._open - 0.01)
         if price >= favor:
             if self._s3_pid:
@@ -391,6 +408,8 @@ class OrderManager:
     async def _manage_short(self, price: float):
         if self._s3_triggered:
             return  # STP3 executing — no cancel/re-arm until its fills complete
+        if not self._pos_fully_filled:
+            return  # bracket child still catching up — don't arm STP3 against a partial qty
         favor, arm = _rp(self._open - 0.01), _rp(self._open + 0.01)
         if price <= favor:
             if self._s3_pid:
@@ -431,20 +450,44 @@ class OrderManager:
             self._do_place_yz()
 
     def _do_place_yz(self):
-        y_pid = self._app.next_id()
-        z_pid = self._app.next_id()
+        # Per spec: parent is a 1-share STP that confirms the trigger price
+        # with a real fill; child (transmit=True, finalizes the bracket)
+        # carries the remaining leg-1 shares and only becomes live once the
+        # parent fills. Margin is reserved for the 1-share parent while
+        # resting, not the full leg -- this is what keeps concurrent Y+Z
+        # margin exposure small. An earlier fix collapsed this into a single
+        # full-quantity order to fix a different bug (child fills being
+        # wrongly cancelled by on_partial_fill), which inflated margin
+        # ~1.58x and caused the 2026-07-13 201 rejection. Restored here with
+        # that original bug fixed properly instead of routed around.
+        self._pos_fully_filled = False
         buy_px, sell_px = _rp(self._open + 0.01), _rp(self._open - 0.01)
+        y_child_qty = self._leg - 1
+        z_child_qty = self._leg - 1
 
-        yp = stp("BUY",  self._leg, buy_px,  transmit=True);  yp.orderId = y_pid
-        zp = stp("SELL", self._leg, sell_px, transmit=True);  zp.orderId = z_pid
-
+        y_pid = self._app.next_id()
+        yp = stp("BUY", 1, buy_px, transmit=(y_child_qty <= 0)); yp.orderId = y_pid
         self._app.placeOrder(y_pid, CONTRACT, yp)
-        self._app.placeOrder(z_pid, CONTRACT, zp)
+        y_cid = 0
+        if y_child_qty > 0:
+            y_cid = self._app.next_id()
+            yc = mkt("BUY", y_child_qty, y_pid, transmit=True); yc.orderId = y_cid
+            self._app.placeOrder(y_cid, CONTRACT, yc)
 
-        self._y = OrderGroup(y_pid, 0, Side.LONG,  self._leg, entry_price=buy_px)
-        self._z = OrderGroup(z_pid, 0, Side.SHORT, self._leg, entry_price=sell_px)
+        z_pid = self._app.next_id()
+        zp = stp("SELL", 1, sell_px, transmit=(z_child_qty <= 0)); zp.orderId = z_pid
+        self._app.placeOrder(z_pid, CONTRACT, zp)
+        z_cid = 0
+        if z_child_qty > 0:
+            z_cid = self._app.next_id()
+            zc = mkt("SELL", z_child_qty, z_pid, transmit=True); zc.orderId = z_cid
+            self._app.placeOrder(z_cid, CONTRACT, zc)
+
+        self._y = OrderGroup(y_pid, y_cid, Side.LONG,  self._leg, entry_price=buy_px)
+        self._z = OrderGroup(z_pid, z_cid, Side.SHORT, self._leg, entry_price=sell_px)
         self._pending = True
-        logger.info("Y/Z placed: BUY=%.2f SELL=%.2f (entries so far=%d)", buy_px, sell_px, self._entries)
+        logger.info("Y/Z placed (bracket): BUY=%.2f (1+%d) SELL=%.2f (1+%d) (entries so far=%d)",
+                    buy_px, y_child_qty, sell_px, z_child_qty, self._entries)
 
     async def _place_stp3(self, action: str, stop_px: float, reverse: bool = False):
         self._placing_stp3 = True
@@ -532,8 +575,14 @@ class OrderManager:
 
     def _cancel_group(self, g: OrderGroup | None):
         if g and not g.filled and not g.cancelled:
+            action = "BUY" if g.side == Side.LONG else "SELL"
             self._app.cancelOrder(g.parent_id)
+            self._undo_watch[g.parent_id] = action
             if g.child_id:
+                # the child may already be live and mid-fill (parent filled,
+                # bracket in progress) when this cancel fires -- e.g. exit_all
+                # racing a still-filling child before _pos_fully_filled. Watch
+                # it too so a stray fill gets neutralized, not silently lost.
                 self._app.cancelOrder(g.child_id)
-            self._undo_watch[g.parent_id] = "BUY" if g.side == Side.LONG else "SELL"
+                self._undo_watch[g.child_id] = action
             g.cancelled = True

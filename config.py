@@ -46,15 +46,15 @@ _eod = os.getenv("EOD_EXIT", "15:59").split(":")
 EOD_EXIT_HOUR, EOD_EXIT_MIN = int(_eod[0]), int(_eod[1])
 
 # Risk
-# 2026-07-13: a single-sided whatIf SELL probe underestimated true margin —
-# IBKR reserves margin for both Y (BUY stop) and Z (SELL stop) concurrently
-# since both are live until one fills. Fixed by probing both sides directly
-# (main.py: fetch_short_margin_per_share + fetch_long_margin_per_share,
-# summed) instead of guessing via a flat multiplier on one side. This is now
-# just a small residual buffer on top of that real combined figure, for
-# basis risk between probe time and actual order placement (equity/price can
-# move in the minutes between) — not compensating for a whole missing side
-# of margin like before, hence the much smaller value.
+# 2026-07-19: entries restored to the spec's bracket design (1-share STP
+# parent + leg-1 MKT child, see strategy/manager.py _do_place_yz) after
+# confirming with the client's original document that this — not a single
+# full-quantity order — is the intended structure. Only the 1-share parent
+# is genuinely live/resting with margin impact while both sides are pending,
+# so sizing is against whichever single side's margin is more binding
+# (main.py: max of short/long probes), not their sum. This is just a small
+# residual buffer on top of that for basis risk between probe time and
+# actual order placement (equity/price can move in the minutes between).
 MARGIN_SAFETY_MULT = 1.1
 HARD_SL_PCT = 0.02
 TP1_ARM_PCT = 0.045

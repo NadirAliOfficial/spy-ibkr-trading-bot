@@ -449,12 +449,17 @@ async def run():
         if elv <= 0:
             logger.error("ELV=0 — aborting")
             return
-        # OCO removed (NADIR6) — Y and Z are independent orders, both live at
-        # once until one fills, and IBKR reserves margin for both pending
-        # orders concurrently (2026-07-13 rejection: needed 1.58x a
-        # single-sided probe). Probe BOTH sides directly and size against
-        # their real combined requirement instead of a flat safety multiplier.
-        # Size against current ELV per client spec (ELV-2%/margin).
+        # OCO removed (NADIR6) — Y and Z are independent orders, no automatic
+        # link between them. Entries are placed as brackets per spec: a
+        # 1-share STP parent (this is the only part genuinely resting/live
+        # with margin impact) plus a leg-1 share MKT child that only
+        # activates once the parent triggers. Because only 1 share per side
+        # is actually live at once while both sides are pending, concurrent
+        # margin exposure is small -- once one side's parent fires, the
+        # child sweeps in the rest and the OTHER side is immediately
+        # cancelled, so the account only ever ends up actually holding one
+        # full-size position, never both. Size against whichever direction's
+        # margin is more binding (typically short), not the sum of both.
         spy_price = app.last_price if app.last_price > 10 else 750.0
         prev_day_elv = app.prev_day_elv
         sizing_elv = min(prev_day_elv, elv) if prev_day_elv > 0 else elv
@@ -462,21 +467,18 @@ async def run():
         short_margin = await app.fetch_short_margin_per_share(probe_qty)
         long_margin = await app.fetch_long_margin_per_share(probe_qty)
         if short_margin >= 50 and long_margin >= 50:
-            combined_margin = round(short_margin + long_margin, 2)
+            binding_margin = round(max(short_margin, long_margin), 2)
         else:
-            # fallback already approximates BOTH sides combined (long ~50% +
-            # short ~110% of price is a reasonable Reg-T estimate), so the
-            # residual multiplier below is applied only once, same as the probed path
-            combined_margin = max(round(spy_price * 1.6, 2), 950.0)
+            binding_margin = max(round(spy_price * 1.6, 2), 950.0)
             logger.warning("whatIf margin unavailable (short=%.2f long=%.2f) — fallback %.2f",
-                           short_margin, long_margin, combined_margin)
+                           short_margin, long_margin, binding_margin)
         # small residual buffer for basis risk between probe time and actual
         # order placement (price/equity can move in the minutes between)
-        sell_margin = round(combined_margin * config.MARGIN_SAFETY_MULT, 2)
+        sell_margin = round(binding_margin * config.MARGIN_SAFETY_MULT, 2)
         margin_pct = sell_margin / spy_price
-        logger.info("Margin probe: short=%.2f/share long=%.2f/share combined=%.2f/share "
+        logger.info("Margin probe: short=%.2f/share long=%.2f/share binding=%.2f/share "
                     "sized=%.2f/share (%.0f%%)  ELV=%.2f  prev_day_ELV=%.2f  sizing_ELV=%.2f",
-                    short_margin, long_margin, combined_margin, sell_margin, margin_pct * 100,
+                    short_margin, long_margin, binding_margin, sell_margin, margin_pct * 100,
                     elv, prev_day_elv, sizing_elv)
 
         leg_qty = calc_leg_qty(sizing_elv, sell_margin)
