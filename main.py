@@ -293,8 +293,15 @@ async def ten_am_pnl_task(order_mgr: OrderManager, risk_mgr: RiskManager):
     # client spec 2026-07-16: 10:00am, not 10:30am (was 10:30am per 2026-07-08 spec)
     target = et_time(10, 0)
     wait = (target - now_et()).total_seconds()
-    if wait > 0:
-        await asyncio.sleep(wait)
+    if wait <= 0:
+        # 2026-07-22: session connected after 10am (e.g. late 2FA approval).
+        # The 10am check no longer applies to a session that starts later --
+        # firing it here would use risk_mgr.current_pnl=0.00 (no real PnL has
+        # arrived yet since we just connected), which check_noon reads as
+        # "0% < 4.5% threshold" and incorrectly halts the day within the
+        # first second of connecting, regardless of the actual account.
+        return
+    await asyncio.sleep(wait)
     if risk_mgr.done:
         return  # already exited earlier
     if risk_mgr.check_noon(risk_mgr.current_pnl):

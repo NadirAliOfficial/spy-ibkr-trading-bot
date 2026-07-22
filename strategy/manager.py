@@ -431,7 +431,15 @@ class OrderManager:
         # exits from being processed for up to 0.5s per re-entry (2026-07-10
         # finding). The delay now runs in a background task with the lock
         # released, and re-validates every guard on reacquire.
-        if self._entries >= config.MAX_ENTRIES_PER_CANDLE or self._halted or self._tp_count >= 2:
+        # 2026-07-22: the very first entry of a candle (entries==0) placed
+        # immediately without checking _is_session_done() -- a concurrently
+        # scheduled task (e.g. ten_am_pnl_task) can mark the session done in
+        # the same event-loop pass as on_candle_open, and this path placed a
+        # bracket anyway since self._halted hadn't been (re)set by then. The
+        # delayed re-entry path below already checks this; the immediate
+        # path needs the same guard.
+        if (self._entries >= config.MAX_ENTRIES_PER_CANDLE or self._halted
+                or self._tp_count >= 2 or self._is_session_done()):
             return
         if self._entries > 0:
             self._pending = True  # reserve the slot so nothing else re-enters during the delay
