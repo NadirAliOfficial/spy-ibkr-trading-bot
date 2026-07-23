@@ -286,6 +286,10 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_bought += fill_qty
+        # client spec 2026-07-23: slippage is credited against the intended
+        # leg size, not the actual per-event fill quantity, by explicit
+        # client confirmation (his own recomputation of the report's total
+        # matched this formula exactly and he asked to keep it as-is).
         self._credit_slippage(abs(fill_price - _rp(self._open + 0.01)), self._leg)
         # 2026-07-23: IBKR's parentId bracket linkage forces the child's
         # executed quantity to match the parent's (confirmed via IBKR API
@@ -315,7 +319,7 @@ class OrderManager:
         self._pending = False
         self._entries += 1
         self.total_sold += fill_qty
-        self._credit_slippage(abs(fill_price - _rp(self._open - 0.01)), self._leg)
+        self._credit_slippage(abs(fill_price - _rp(self._open - 0.01)), self._leg)  # see Y note above
         remaining = self._leg - fill_qty
         if remaining > 0:
             sweep_oid = self._app.next_id()
