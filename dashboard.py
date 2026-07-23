@@ -691,8 +691,14 @@ def api_state():
             state["entry_price"] = sf["entry_price"]
         if sf.get("pos_qty"):
             state["pos_qty"] = sf["pos_qty"]
-        if sf.get("daily_pnl"):
-            state["daily_pnl"] = sf["daily_pnl"]
+        # daily_pnl intentionally NOT taken from the status file here: main.py
+        # computes it as equity_with_loan - prev_day_elv, which is a leveraged
+        # equity delta, not real daily P&L, and can be wildly different from
+        # the correct value (2026-07-23: showed +$1,731/+5.69% on the
+        # dashboard while the real IBKR PnL log was around -$21). The
+        # log-parsed value from parse_log() above (straight from "PnL
+        # update:" lines, which use IBKR's actual reqPnL dailyPnL) is correct
+        # and is left as-is.
         if sf.get("bot_pnl"):
             state["bot_pnl"] = sf["bot_pnl"]
     return jsonify(state)
