@@ -165,8 +165,9 @@ class OrderManager:
             return
 
         # Y parent (1 share) fill — trigger confirmed. Per spec: this cancels Z
-        # and starts the LONG; the remaining leg-1 shares come via the child
-        # MKT order, which only activates now that the parent has filled.
+        # and starts the LONG; the remaining leg-1 shares are fired as an
+        # independent sweep order from within _on_y_parent_filled (not an
+        # IBKR-linked child — see that function for why).
         if self._y and not self._y.cancelled and not self._y.parent_filled and order_id == self._y.parent_id:
             self._y.parent_filled = True
             self._y.entry_price = fill_price
@@ -281,28 +282,50 @@ class OrderManager:
         self._cancel_group(self._z)
         self._pos = Side.LONG
         self._pos_qty = fill_qty
-        self._pos_fully_filled = fill_qty >= self._leg  # True only if no child needed (leg<=1)
         self._entry_px = fill_price  # actual fill price — slippage naturally in strategy PnL
         self._pending = False
         self._entries += 1
         self.total_bought += fill_qty
         self._credit_slippage(abs(fill_price - _rp(self._open + 0.01)), self._leg)
-        if self._pos_qty >= self._leg:
+        # 2026-07-23: IBKR's parentId bracket linkage forces the child's
+        # executed quantity to match the parent's (confirmed via IBKR API
+        # docs: "the quantity of the bracket order always matches the parent
+        # quantity") -- attaching a leg-1 share child to a 1-share parent
+        # silently capped every fill to 1+1=2 shares all day, not the
+        # intended full leg. Fixed by NOT using parentId at all for the
+        # remainder: fire a fresh, independent MKT order ourselves the
+        # instant we detect the parent's fill.
+        remaining = self._leg - fill_qty
+        if remaining > 0:
+            sweep_oid = self._app.next_id()
+            sweep = mkt("BUY", remaining, 0, transmit=True); sweep.orderId = sweep_oid
+            self._app.placeOrder(sweep_oid, CONTRACT, sweep)
+            self._y.child_id = sweep_oid
+            logger.info("Y sweep order: BUY %d shares (independent, not IBKR bracket-linked)", remaining)
+        else:
             self._y.filled = True
+            self._pos_fully_filled = True
         logger.info("Y LONG parent filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
 
     async def _on_z_parent_filled(self, fill_price: float, fill_qty: int = 1):
         self._cancel_group(self._y)
         self._pos = Side.SHORT
         self._pos_qty = fill_qty
-        self._pos_fully_filled = fill_qty >= self._leg  # True only if no child needed (leg<=1)
         self._entry_px = fill_price  # actual fill price — slippage naturally in strategy PnL
         self._pending = False
         self._entries += 1
         self.total_sold += fill_qty
         self._credit_slippage(abs(fill_price - _rp(self._open - 0.01)), self._leg)
-        if self._pos_qty >= self._leg:
+        remaining = self._leg - fill_qty
+        if remaining > 0:
+            sweep_oid = self._app.next_id()
+            sweep = mkt("SELL", remaining, 0, transmit=True); sweep.orderId = sweep_oid
+            self._app.placeOrder(sweep_oid, CONTRACT, sweep)
+            self._z.child_id = sweep_oid
+            logger.info("Z sweep order: SELL %d shares (independent, not IBKR bracket-linked)", remaining)
+        else:
             self._z.filled = True
+            self._pos_fully_filled = True
         logger.info("Z SHORT parent filled %d shares @ %.2f (entry#%d)", fill_qty, fill_price, self._entries)
 
     # ── STP3 / reverse logic ──────────────────────────────────────────────
@@ -458,44 +481,31 @@ class OrderManager:
             self._do_place_yz()
 
     def _do_place_yz(self):
-        # Per spec: parent is a 1-share STP that confirms the trigger price
-        # with a real fill; child (transmit=True, finalizes the bracket)
-        # carries the remaining leg-1 shares and only becomes live once the
-        # parent fills. Margin is reserved for the 1-share parent while
-        # resting, not the full leg -- this is what keeps concurrent Y+Z
-        # margin exposure small. An earlier fix collapsed this into a single
-        # full-quantity order to fix a different bug (child fills being
-        # wrongly cancelled by on_partial_fill), which inflated margin
-        # ~1.58x and caused the 2026-07-13 201 rejection. Restored here with
-        # that original bug fixed properly instead of routed around.
+        # Per spec: only a 1-share STP triggers per side while both are
+        # pending, keeping concurrent Y+Z margin exposure small. The
+        # remaining leg-1 shares are NOT an IBKR parentId-linked child --
+        # confirmed via IBKR's own API docs that a bracket child's executed
+        # quantity always matches the parent's, which silently capped every
+        # entry at 1+1=2 shares all day (2026-07-23) instead of the full
+        # leg. The remainder is instead fired as an independent order by our
+        # own code the instant the parent fill is detected (see
+        # _on_y_parent_filled / _on_z_parent_filled).
         self._pos_fully_filled = False
         buy_px, sell_px = _rp(self._open + 0.01), _rp(self._open - 0.01)
-        y_child_qty = self._leg - 1
-        z_child_qty = self._leg - 1
 
         y_pid = self._app.next_id()
-        yp = stp("BUY", 1, buy_px, transmit=(y_child_qty <= 0)); yp.orderId = y_pid
+        yp = stp("BUY", 1, buy_px, transmit=True); yp.orderId = y_pid
         self._app.placeOrder(y_pid, CONTRACT, yp)
-        y_cid = 0
-        if y_child_qty > 0:
-            y_cid = self._app.next_id()
-            yc = mkt("BUY", y_child_qty, y_pid, transmit=True); yc.orderId = y_cid
-            self._app.placeOrder(y_cid, CONTRACT, yc)
 
         z_pid = self._app.next_id()
-        zp = stp("SELL", 1, sell_px, transmit=(z_child_qty <= 0)); zp.orderId = z_pid
+        zp = stp("SELL", 1, sell_px, transmit=True); zp.orderId = z_pid
         self._app.placeOrder(z_pid, CONTRACT, zp)
-        z_cid = 0
-        if z_child_qty > 0:
-            z_cid = self._app.next_id()
-            zc = mkt("SELL", z_child_qty, z_pid, transmit=True); zc.orderId = z_cid
-            self._app.placeOrder(z_cid, CONTRACT, zc)
 
-        self._y = OrderGroup(y_pid, y_cid, Side.LONG,  self._leg, entry_price=buy_px)
-        self._z = OrderGroup(z_pid, z_cid, Side.SHORT, self._leg, entry_price=sell_px)
+        self._y = OrderGroup(y_pid, 0, Side.LONG,  self._leg, entry_price=buy_px)
+        self._z = OrderGroup(z_pid, 0, Side.SHORT, self._leg, entry_price=sell_px)
         self._pending = True
-        logger.info("Y/Z placed (bracket): BUY=%.2f (1+%d) SELL=%.2f (1+%d) (entries so far=%d)",
-                    buy_px, y_child_qty, sell_px, z_child_qty, self._entries)
+        logger.info("Y/Z placed (1-share triggers): BUY=%.2f SELL=%.2f leg=%d (entries so far=%d)",
+                    buy_px, sell_px, self._leg, self._entries)
 
     async def _place_stp3(self, action: str, stop_px: float, reverse: bool = False):
         self._placing_stp3 = True
